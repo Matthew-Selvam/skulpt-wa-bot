@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TrophyBot · Admin</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel-2: #1d2130;
+    --border: #272c3d;
+    --text: #e8eaf2;
+    --muted: #8b90a3;
+    --accent: #f5b301;
+    --accent-2: #ff7a45;
+    --green: #22c55e;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --radius: 14px;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background:
+      radial-gradient(1000px 500px at 85% -10%, rgba(245, 179, 1, 0.10), transparent 60%),
+      radial-gradient(800px 400px at 0% 0%, rgba(59, 130, 246, 0.08), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(23, 26, 35, 0.7);
+    backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .logo {
+    width: 42px; height: 42px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center; font-size: 22px;
+    box-shadow: 0 4px 14px rgba(245, 179, 1, 0.35);
+  }
+  .brand h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+  .brand small { color: var(--muted); font-size: 12px; display: block; }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 14px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--panel);
+    font-size: 13px; color: var(--muted); cursor: pointer;
+    transition: all .15s ease;
+  }
+  .pill:hover { border-color: var(--accent); color: var(--text); }
+  .pill .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.off { background: var(--muted); }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px 20px;
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .card:hover { transform: translateY(-2px); border-color: #3a4060; }
+  .card .label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .card .value { font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: -0.02em; }
+  .card .value.gold { color: var(--accent); }
+  .card .value.green { color: var(--green); }
+  .card .value.blue { color: var(--blue); }
+  .card .value.red { color: var(--red); }
+
+  /* Toolbar */
+  .toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: none; border-radius: 10px; padding: 10px 18px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: all .15s ease; color: var(--text);
+  }
+  .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #111; }
+  .btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
+  .btn-ghost { background: var(--panel-2); border: 1px solid var(--border); }
+  .btn-ghost:hover { border-color: var(--accent); }
+  .btn-danger { background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #fca5a5; }
+  .btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
+  .btn-sm { padding: 6px 12px; font-size: 12.5px; border-radius: 8px; }
+
+  /* Form */
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; flex: 1; }
+  input, select, textarea {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 10px; padding: 10px 14px;
+    font-size: 14px; outline: none; transition: border-color .15s ease;
+    font-family: inherit;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  input::placeholder { color: #5b6073; }
+  .input-name { flex: 2; min-width: 160px; }
+  .input-phone { flex: 2; min-width: 150px; }
+  .input-email { flex: 2; min-width: 170px; }
+
+  /* Clients list */
+  .clients { display: grid; gap: 12px; }
+  .client {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+    transition: border-color .15s ease;
+  }
+  .client:hover { border-color: #3a4060; }
+  .client-head {
+    display: flex; align-items: center; gap: 14px; padding: 16px 20px; cursor: pointer;
+  }
+  .avatar {
+    width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0;
+    display: grid; place-items: center; font-weight: 700; font-size: 16px;
+    background: linear-gradient(135deg, #2a2f45, #3a4060); color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  .client-info { flex: 1; min-width: 0; }
+  .client-info h3 { font-size: 15px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  .client-info .sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600;
+  }
+  .badge.order { background: rgba(59,130,246,.15); color: #93c5fd; }
+  .badge.admin { background: rgba(245,179,1,.15); color: var(--accent); }
+  .badge.paused { background: rgba(139,144,163,.15); color: var(--muted); }
+  .badge.needs { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge.declined { background: rgba(139,144,163,.15); color: var(--muted); }
+  .badge.pending { background: rgba(245,179,1,.15); color: var(--accent); }
+  .chevron { color: var(--muted); transition: transform .2s ease; }
+  .client.open .chevron { transform: rotate(180deg); }
+
+  .client-body { display: none; padding: 4px 20px 20px; border-top: 1px dashed var(--border); }
+  .client.open .client-body { display: block; animation: fadeIn .2s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+  .events { margin-top: 14px; display: grid; gap: 8px; }
+  .event {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 16px;
+  }
+  .event-info { flex: 1; min-width: 200px; }
+  .event-info b { font-size: 14px; }
+  .event-info .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .event-actions { display: flex; gap: 8px; align-items: center; }
+  .countdown { font-size: 12px; color: var(--muted); }
+
+  .empty { color: var(--muted); text-align: center; padding: 40px 20px; border: 1px dashed var(--border); border-radius: var(--radius); }
+  .edit-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 16px; }
+  .edit-form textarea { grid-column: 1 / -1; resize: vertical; min-height: 54px; }
+
+  footer { text-align: center; color: #4c5166; font-size: 12.5px; padding: 20px; }
+
+  /* Modal */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(6, 8, 12, 0.75);
+    backdrop-filter: blur(4px); display: none; place-items: center; z-index: 50; padding: 20px;
+  }
+  .overlay.show { display: grid; animation: fadeIn .15s ease; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 26px; width: 100%; max-width: 420px; box-shadow: var(--shadow);
+  }
+  .modal h2 { font-size: 17px; margin-bottom: 18px; }
+  .modal .form { display: grid; gap: 12px; }
+  .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 12px 22px; border-radius: 12px; font-size: 14px; box-shadow: var(--shadow);
+    opacity: 0; transition: all .25s ease; z-index: 60; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  @media (max-width: 640px) {
+    .brand small { display: none; }
+    header { padding: 16px; }
+    main { padding: 20px 14px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="logo">🏆</div>
+    <div>
+      <h1>TrophyBot Admin</h1>
+      <small>Client management &amp; event outreach</small>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <button class="pill" id="outreachToggle" title="Enable / disable the reminder scheduler">
+    <span class="dot" id="outreachDot"></span>
+    <span id="outreachLabel">Outreach …</span>
+  </button>
+  <button class="pill" id="runNow" title="Run the reminder scheduler right now">▶ Run now</button>
+  <button class="pill" id="syncBtn" title="Import clients from past orders">🔄 Sync orders</button>
+</header>
+
+<main>
+  <section class="stats" id="stats"></section>
+
+  <div class="toolbar">
+    <button class="btn btn-primary" id="addClientBtn">＋ Add client</button>
+    <div class="form-row">
+      <input class="input-name" id="quickName" placeholder="Name" />
+      <input class="input-phone" id="quickPhone" placeholder="Phone (with country code)" />
+      <button class="btn btn-ghost" id="quickAddBtn">Quick add</button>
+    </div>
+  </div>
+
+  <section class="clients" id="clients">
+    <div class="empty">Loading clients…</div>
+  </section>
+</main>
+
+<footer>TrophyBot · Skulpt WhatsApp bot — admin console</footer>
+
+<!-- Add client modal -->
+<div class="overlay" id="addModal">
+  <div class="modal">
+    <h2>Add client</h2>
+    <div class="form">
+      <input id="mName" placeholder="Full name" />
+      <input id="mPhone" placeholder="Phone, e.g. 919876543210" />
+      <input id="mEmail" placeholder="Email (optional)" />
+      <textarea id="mNotes" placeholder="Notes (optional)" rows="2"></textarea>
+      <div class="actions">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button class="btn btn-primary" id="mSave">Save client</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add event modal -->
+<div class="overlay" id="eventModal">
+  <div class="modal">
+    <h2 id="eventModalTitle">Add event</h2>
+    <div class="form">
+      <input id="eName" placeholder="Event name, e.g. Annual Awards Night" />
+      <input id="eDate" type="date" />
+      <input id="eType" placeholder="Type (optional), e.g. corporate, sports" />
+      <div class="actions">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button class="btn btn-primary" id="eSave">Save event</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- state ----
+  let token = sessionStorage.getItem("adminToken") || "";
+  let clients = [];
+  let stats = null;
+  let eventClientId = null;
+
+  // ---- http helper (auto 401 → login) ----
+  async function api(path, options = {}) {
+    const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
+    if (token) headers.Authorization = "Bearer " + token;
+    const res = await fetch(path, Object.assign({}, options, { headers }));
+    if (res.status === 401) {
+      await login();
+      return api(path, options);
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || data.message || res.statusText);
+    }
+    return res.json();
+  }
+
+  async function login() {
+    // Use a direct fetch here (not api()) to avoid 401 → login() recursion.
+    for (;;) {
+      const pwd = prompt("Enter admin password:");
+      if (pwd === null) {
+        document.getElementById("clients").innerHTML =
+          '<div class="empty">🔒 Login required — refresh the page to try again.</div>';
+        throw new Error("Login cancelled");
+      }
+      const res = await fetch("/admin/api/stats", {
+        headers: { Authorization: "Bearer " + pwd },
+      });
+      if (res.ok) {
+        token = pwd;
+        sessionStorage.setItem("adminToken", token);
+        return;
+      }
+      alert("Incorrect password — try again.");
+    }
+  }
+
+  // ---- toast ----
+  let toastTimer = null;
+  function toast(msg) {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+  }
+
+  // ---- rendering ----
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+    );
+  }
+
+  function fmtDate(d) {
+    if (!d) return "—";
+    const date = new Date(d);
+    return date.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  function daysUntil(d) {
+    const diff = new Date(d) - Date.now();
+    const days = Math.ceil(diff / 86400000);
+    if (days < 0) return "passed";
+    if (days === 0) return "today";
+    return `in ${days}d`;
+  }
+
+  function statusBadge(e) {
+    if (e.responded) {
+      return e.needsProducts === true
+        ? '<span class="badge needs">✅ needs products</span>'
+        : '<span class="badge declined">🙅 declined</span>';
+    }
+    if ((e.reminderCount || 0) > 0) return '<span class="badge pending">⏳ awaiting reply</span>';
+    return '<span class="badge pending">reminder due</span>';
+  }
+
+  function renderStats() {
+    const s = stats || {};
+    const cards = [
+      { label: "Clients", value: s.clients ?? "…", cls: "" },
+      { label: "Active clients", value: s.activeClients ?? "…", cls: "green" },
+      { label: "Upcoming events", value: s.upcomingEvents ?? "…", cls: "gold" },
+      { label: "Awaiting replies", value: s.pendingReplies ?? "…", cls: "blue" },
+      { label: "Needs products", value: s.needsProducts ?? "…", cls: "green" },
+    ];
+    document.getElementById("stats").innerHTML = cards
+      .map((c) => `<div class="card"><div class="label">${c.label}</div><div class="value ${c.cls}">${c.value}</div></div>`)
+      .join("");
+    updateOutreachPill();
+  }
+
+  function renderClients() {
+    const el = document.getElementById("clients");
+    if (!clients.length) {
+      el.innerHTML = '<div class="empty">No clients yet — add one above, or click "Sync orders" to import past customers.</div>';
+      return;
+    }
+    el.innerHTML = clients.map((c, i) => {
+      const initials = (c.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+      const src = c.source === "order" ? '<span class="badge order">order</span>' : '<span class="badge admin">admin</span>';
+      const pause = c.active ? "" : '<span class="badge paused">paused</span>';
+      const next = c.events.filter((e) => new Date(e.date) >= Date.now())[0];
+      const subParts = [`${c.phone}`, src, pause];
+      if (next) subParts.push(`next: <b>${esc(next.name)}</b> ${fmtDate(next.date)}`);
+      const events = c.events.length
+        ? c.events.map((e) => `
+            <div class="event">
+              <div class="event-info">
+                <b>🎖 ${esc(e.name)}</b>
+                <div class="sub">${fmtDate(e.date)} · ${daysUntil(e.date)} · ${e.reminderCount || 0} reminder(s) sent</div>
+                ${e.response ? `<div class="sub">💬 reply: “${esc(e.response)}”</div>` : ""}
+              </div>
+              ${statusBadge(e)}
+              <div class="event-actions">
+                ${(e.reminderCount || 0) === 0 || !e.responded ? `<button class="btn btn-ghost btn-sm" data-remind="${c.id}|${e.id}">Send reminder</button>` : ""}
+                <button class="btn btn-danger btn-sm" data-del-event="${c.id}|${e.id}">✕</button>
+              </div>
+            </div>`).join("")
+        : '<div class="empty" style="padding:18px">No events yet.</div>';
+      return `
+        <div class="client" id="client-${i}">
+          <div class="client-head" data-toggle="${i}">
+            <div class="avatar">${esc(initials)}</div>
+            <div class="client-info">
+              <h3>${esc(c.name)} <span class="chevron">▾</span></h3>
+              <div class="sub">${subParts.join(" · ")}</div>
+            </div>
+          </div>
+          <div class="client-body">
+            <div class="event-actions" style="margin-top:14px;flex-wrap:wrap">
+              <button class="btn btn-ghost btn-sm" data-add-event="${c.id}">＋ Add event</button>
+              <button class="btn btn-ghost btn-sm" data-edit="${c.id}">✏️ Edit details</button>
+              <button class="btn btn-ghost btn-sm" data-pause="${c.id}">${c.active ? "⏸ Pause" : "▶️ Resume"}</button>
+              <button class="btn btn-danger btn-sm" data-del="${c.id}">Delete client</button>
+            </div>
+            <div class="events">${events}</div>
+            <div class="edit-form" id="edit-${c.id}" hidden>
+              <input data-field="name" value="${esc(c.name)}" placeholder="Name" />
+              <input data-field="email" value="${esc(c.email)}" placeholder="Email" />
+              <input data-field="notes" value="${esc(c.notes)}" placeholder="Notes" />
+              <button class="btn btn-primary btn-sm" data-save-edit="${c.id}">Save</button>
+              <button class="btn btn-ghost btn-sm" data-cancel-edit="${c.id}">Cancel</button>
+            </div>
+          </div>
+        </div>`;
+    }).join("");
+
+    el.querySelectorAll(".client-head").forEach((h) => {
+      h.addEventListener("click", () => {
+        const box = h.closest(".client");
+        box.classList.toggle("open");
+      });
+    });
+  }
+
+  function updateOutreachPill() {
+    const on = stats ? stats.outreachEnabled : false;
+    document.getElementById("outreachDot").className = "dot " + (on ? "on" : "off");
+    document.getElementById("outreachLabel").textContent = on ? "Outreach on" : "Outreach off";
+    document.getElementById("runNow").style.display = on ? "" : "none";
+  }
+
+  // ---- data loading ----
+  async function load() {
+    try {
+      const [s, c] = await Promise.all([api("/admin/api/stats"), api("/admin/api/clients")]);
+      stats = s;
+      clients = c;
+      renderStats();
+      renderClients();
+    } catch (e) {
+      document.getElementById("clients").innerHTML = `<div class="empty">Failed to load: ${esc(e.message)}</div>`;
+    }
+  }
+
+  // ---- actions ----
+  function openModal(id) {
+    document.getElementById(id).classList.add("show");
+  }
+  function closeModal(el) {
+    el.closest(".overlay").classList.remove("show");
+  }
+  document.querySelectorAll(".overlay").forEach((o) => {
+    o.addEventListener("click", (e) => {
+      if (e.target === o || e.target.hasAttribute("data-close")) o.classList.remove("show");
+    });
+  });
+
+  document.getElementById("addClientBtn").addEventListener("click", () => {
+    document.getElementById("mName").value = "";
+    document.getElementById("mPhone").value = "";
+    document.getElementById("mEmail").value = "";
+    document.getElementById("mNotes").value = "";
+    openModal("addModal");
+  });
+
+  document.getElementById("mSave").addEventListener("click", async () => {
+    const payload = {
+      name: document.getElementById("mName").value.trim(),
+      phone: document.getElementById("mPhone").value.trim(),
+      email: document.getElementById("mEmail").value.trim(),
+      notes: document.getElementById("mNotes").value.trim(),
+    };
+    if (!payload.name || !payload.phone) return toast("Name and phone are required");
+    try {
+      await api("/admin/api/clients", { method: "POST", body: JSON.stringify(payload) });
+      closeModal(document.getElementById("mSave"));
+      toast("Client added ✅");
+      load();
+    } catch (e) { toast("⚠️ " + e.message); }
+  });
+
+  document.getElementById("quickAddBtn").addEventListener("click", async () => {
+    const name = document.getElementById("quickName").value.trim();
+    const phone = document.getElementById("quickPhone").value.trim();
+    if (!name || !phone) return toast("Name and phone are required");
+    try {
+      await api("/admin/api/clients", { method: "POST", body: JSON.stringify({ name, phone }) });
+      document.getElementById("quickName").value = "";
+      document.getElementById("quickPhone").value = "";
+      toast("Client added ✅");
+      load();
+    } catch (e) { toast("⚠️ " + e.message); }
+  });
+
+  document.getElementById("runNow").addEventListener("click", async () => {
+    try {
+      const r = await api("/admin/api/outreach/run", { method: "POST" });
+      toast(r.skipped ? "Outreach is paused" : `Sent ${r.sent}/${r.due} reminders 📣`);
+      load();
+    } catch (e) { toast("⚠️ " + e.message); }
+  });
+
+  document.getElementById("outreachToggle").addEventListener("click", async () => {
+    if (!stats) return;
+    try {
+      const r = await api("/admin/api/outreach/toggle", {
+        method: "POST",
+        body: JSON.stringify({ enabled: !stats.outreachEnabled }),
+      });
+      stats.outreachEnabled = r.enabled;
+      updateOutreachPill();
+      toast(r.enabled ? "Outreach enabled 📣" : "Outreach paused ⏸");
+    } catch (e) { toast("⚠️ " + e.message); }
+  });
+
+  document.getElementById("syncBtn").addEventListener("click", async () => {
+    try {
+      const r = await api("/admin/api/clients/sync", { method: "POST" });
+      toast(`Synced orders — ${r.added} new client(s) added`);
+      load();
+    } catch (e) { toast("⚠️ " + e.message); }
+  });
+
+  // event delegation for client actions
+  document.getElementById("clients").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const dataset = btn.dataset;
+
+    if (dataset.del) {
+      if (!confirm("Delete this client and all their events?")) return;
+      try {
+        await api("/admin/api/clients/" + dataset.del, { method: "DELETE" });
+        toast("Client deleted");
+        load();
+      } catch (err) { toast("⚠️ " + err.message); }
+    } else if (dataset.delEvent) {
+      if (!confirm("Delete this event?")) return;
+      const [cid, eid] = dataset.delEvent.split("|");
+      try {
+        await api(`/admin/api/clients/${cid}/events/${eid}`, { method: "DELETE" });
+        toast("Event deleted");
+        load();
+      } catch (err) { toast("⚠️ " + err.message); }
+    } else if (dataset.remind) {
+      const [cid, eid] = dataset.remind.split("|");
+      try {
+        await api(`/admin/api/clients/${cid}/events/${eid}/remind`, { method: "POST" });
+        toast("Reminder sent 📣");
+        load();
+      } catch (err) { toast("⚠️ " + err.message); }
+    } else if (dataset.addEvent) {
+      eventClientId = dataset.addEvent;
+      document.getElementById("eName").value = "";
+      document.getElementById("eDate").value = "";
+      document.getElementById("eType").value = "";
+      document.getElementById("eventModalTitle").textContent = "Add event for " + (clients.find((c) => c.id === dataset.addEvent)?.name || "");
+      openModal("eventModal");
+    } else if (dataset.edit) {
+      document.getElementById("edit-" + dataset.edit).hidden = false;
+    } else if (dataset.saveEdit) {
+      const form = document.getElementById("edit-" + dataset.saveEdit);
+      const payload = {
+        name: form.querySelector('[data-field="name"]').value.trim(),
+        email: form.querySelector('[data-field="email"]').value.trim(),
+        notes: form.querySelector('[data-field="notes"]').value.trim(),
+      };
+      if (!payload.name) return toast("Name is required");
+      try {
+        await api("/admin/api/clients/" + dataset.saveEdit, { method: "PUT", body: JSON.stringify(payload) });
+        toast("Saved ✅");
+        load();
+      } catch (err) { toast("⚠️ " + err.message); }
+    } else if (dataset.cancelEdit) {
+      document.getElementById("edit-" + dataset.cancelEdit).hidden = true;
+    } else if (dataset.pause) {
+      const c = clients.find((x) => x.id === dataset.pause);
+      if (!c) return;
+      try {
+        await api("/admin/api/clients/" + dataset.pause, { method: "PUT", body: JSON.stringify({ active: !c.active }) });
+        toast(c.active ? "Client paused ⏸" : "Client resumed ▶️");
+        load();
+      } catch (err) { toast("⚠️ " + err.message); }
+    }
+  });
+
+  document.getElementById("eSave").addEventListener("click", async () => {
+    const payload = {
+      name: document.getElementById("eName").value.trim(),
+      date: document.getElementById("eDate").value,
+      type: document.getElementById("eType").value.trim(),
+    };
+    if (!payload.name || !payload.date) return toast("Event name and date are required");
+    try {
+      await api(`/admin/api/clients/${eventClientId}/events`, { method: "POST", body: JSON.stringify(payload) });
+      closeModal(document.getElementById("eSave"));
+      toast("Event added ✅");
+      load();
+    } catch (err) { toast("⚠️ " + err.message); }
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

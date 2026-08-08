@@ -5,6 +5,13 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import WhatsAppBusinessAPI from "./whatsapp-api-client.js";
+import { Trophy } from "./models/Trophy.js";
+import { Order } from "./models/Order.js";
+import { Client } from "./models/Client.js";
+import {
+  handleAdminCommand,
+  handleClientReply,
+} from "./services/outreachService.js";
 
 dotenv.config();
 
@@ -16,26 +23,6 @@ mongoose
   .connect(process.env.MONGO_URI || "mongodb://127.0.0.1:27017/trophybot")
   .then(() => console.log("✅ Connected to MongoDB"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
-
-const TrophySchema = new mongoose.Schema({
-  name: String,
-  price: Number,
-  image: String,
-});
-
-const OrderSchema = new mongoose.Schema({
-  userId: String,
-  items: Array,
-  total: Number,
-  customization: String,
-  status: String,
-  orderRef: { type: String, unique: true, default: () => Date.now().toString() },
-  groupId: String,
-  createdAt: { type: Date, default: Date.now },
-});
-
-const Trophy = mongoose.model("Trophy", TrophySchema);
-const Order = mongoose.model("Order", OrderSchema);
 
 // -------------------- CONFIGURATION --------------------
 const BOT_NUMBER = process.env.BOT_NUMBER || "918838975981";
@@ -185,6 +172,15 @@ export async function botHandler(message, businessAccountId) {
 
     const session = sessions.get(sessionKey);
 
+    // Admin-only client management & outreach commands
+    const adminResponse = await handleAdminCommand(from, text);
+    if (adminResponse.handled) {
+      for (const msg of adminResponse.messages) {
+        await sendMessage(from, msg);
+      }
+      return;
+    }
+
     // Detect greetings and commands
     const isGreeting = /^(hi|hello|hey|hii|hiii|good morning|good afternoon|good evening|namaste|namaskar)/.test(cleanText);
     const isHelpRequest = /^(help|menu|start|begin|commands?)/.test(cleanText);
@@ -225,6 +221,27 @@ export async function botHandler(message, businessAccountId) {
         : "❓ No active orders found. Type *browse* to start shopping!";
       await sendMessage(from, noOrderMsg);
       return;
+    }
+
+    // Client outreach reply handling (replies to recurring reminders)
+    // Only intercept when the user isn't mid-order, and only in DMs.
+    // Skip known bot commands so a normal "browse" isn't mistaken for a reply.
+    const isOutreachCommand = /^(browse|checkout|pay|reset|menu|start|back)\b|^\d+$/.test(cleanText);
+    if (
+      !isGroup &&
+      !isOutreachCommand &&
+      (session.step === "welcome" || session.step === "done")
+    ) {
+      const reply = await handleClientReply(from, text);
+      if (reply.handled) {
+        for (const msg of reply.messages) {
+          await sendMessage(from, msg);
+        }
+        if (reply.positive) {
+          session.step = "browse"; // ready to select a trophy
+        }
+        return;
+      }
     }
 
     // Reset session if user says browse and session is done
@@ -298,6 +315,29 @@ export async function botHandler(message, businessAccountId) {
         groupId: session.groupId,
       });
       await order.save();
+
+      // Register / update the client record for future outreach
+      if (!isGroup) {
+        try {
+          const cleanPhone = from.replace(/\D/g, "");
+          if (cleanPhone) {
+            const existing = await Client.findOne({ phone: cleanPhone });
+            if (existing) {
+              existing.lastOrderAt = new Date();
+              await existing.save();
+            } else {
+              await Client.create({
+                name: `Client ${cleanPhone.slice(-4)}`,
+                phone: cleanPhone,
+                source: "order",
+                lastOrderAt: new Date(),
+              });
+            }
+          }
+        } catch (err) {
+          console.error("⚠️ Failed to register client:", err.message);
+        }
+      }
 
       session.orderId = order._id;
       session.step = "payment";

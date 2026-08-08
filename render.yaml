@@ -5,7 +5,7 @@ services:
     env: node
     plan: free
     buildCommand: npm install
-    startCommand: npm run start:production
+    startCommand: npm run start:webhook
     envVars:
       - key: NODE_ENV
         value: production
