@@ -12,6 +12,7 @@ import {
   handleAdminCommand,
   handleClientReply,
 } from "./services/outreachService.js";
+import { mockDeliveryUpdates } from "./utils/deliveryTracker.js";
 
 dotenv.config();
 
@@ -106,8 +107,17 @@ async function sendMessage(to, message, mediaUrl = null) {
     console.log(`📤 Sending message to ${to}:`, message);
     
     if (mediaUrl) {
-      console.log(`📎 Media URL: ${mediaUrl}`);
-      // Send as document
+      console.log(`📎 Media: ${mediaUrl}`);
+      // Local files must be uploaded first — the Cloud API only accepts a
+      // publicly reachable URL in `link`, so a filesystem path silently fails.
+      if (!/^https?:\/\//i.test(mediaUrl)) {
+        return await whatsappAPI.sendDocumentFromFile(
+          to,
+          mediaUrl,
+          path.basename(mediaUrl),
+          message
+        );
+      }
       return await whatsappAPI.sendMediaMessage(to, mediaUrl, message, "document");
     } else {
       // Send as text message
@@ -360,7 +370,6 @@ export async function botHandler(message, businessAccountId) {
           ? `🎉 @${userId.split('@')[0]} *Order Confirmed!* ✅\n\n📄 *Invoice attached*\n🚚 *Delivery tracking will start soon*\n\nThank you for choosing TrophyBot! 🏆`
           : "🎉 *Order Confirmed!* ✅\n\n📄 *Invoice attached*\n🚚 *Delivery tracking will start soon*\n\nThank you for choosing TrophyBot! 🏆";
         
-        // TODO: Send invoice as media message
         await sendMessage(from, invoiceCaption, invoicePath);
       } catch (err) {
         console.error("❌ Invoice generation failed:", err);
@@ -369,6 +378,14 @@ export async function botHandler(message, businessAccountId) {
           : "⚠️ Could not generate invoice.";
         await sendMessage(from, errorMsg);
       }
+
+      // Start delivery tracking regardless of invoice outcome — the order is
+      // paid, so the customer should get status updates either way.
+      mockDeliveryUpdates(
+        from,
+        (to, text) => sendMessage(to, text),
+        isGroup ? `@${userId.split('@')[0]} ` : ""
+      );
 
       session.step = "done";
     }

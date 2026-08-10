@@ -48,7 +48,93 @@ class WhatsAppBusinessAPI {
     }
   }
 
-  // Send media message (document/image)
+  // Upload a local file to the Cloud API and return its media ID.
+  // Required for sending locally-generated files (e.g. invoice PDFs): the
+  // messages endpoint only accepts a publicly reachable `link`, so anything
+  // generated on disk has to be uploaded here first.
+  async uploadMedia(filePath, mimeType = "application/pdf") {
+    try {
+      const fs = await import("fs");
+      const FormData = (await import("form-data")).default;
+
+      const url = `${this.baseURL}/${this.phoneNumberId}/media`;
+
+      const formData = new FormData();
+      formData.append("messaging_product", "whatsapp");
+      formData.append("file", fs.createReadStream(filePath), {
+        contentType: mimeType,
+      });
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.accessToken}`,
+          ...formData.getHeaders(),
+        },
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.id) {
+        console.log("✅ Media uploaded successfully:", result.id);
+        return { success: true, mediaId: result.id };
+      }
+
+      console.error("❌ Failed to upload media:", result);
+      return { success: false, error: result };
+    } catch (error) {
+      console.error("❌ Error uploading media:", error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Send a document that exists on the local filesystem (upload, then send by ID)
+  async sendDocumentFromFile(to, filePath, filename, caption = "") {
+    const upload = await this.uploadMedia(filePath, "application/pdf");
+    if (!upload.success) {
+      return { success: false, error: upload.error };
+    }
+
+    try {
+      const url = `${this.baseURL}/${this.phoneNumberId}/messages`;
+
+      const payload = {
+        messaging_product: "whatsapp",
+        to: to,
+        type: "document",
+        document: {
+          id: upload.mediaId,
+          filename: filename,
+          caption: caption,
+        },
+      };
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        console.log("✅ Document sent successfully:", result);
+        return { success: true, messageId: result.messages[0].id };
+      }
+
+      console.error("❌ Failed to send document:", result);
+      return { success: false, error: result };
+    } catch (error) {
+      console.error("❌ Error sending document:", error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Send media message (document/image) by public URL
   async sendMediaMessage(to, mediaUrl, caption = "", type = "document") {
     try {
       const url = `${this.baseURL}/${this.phoneNumberId}/messages`;

@@ -219,7 +219,7 @@ export async function generateResponse(messageBody, waId, name, message, isGroup
         }
 
         // Start mock delivery tracking
-        mockDeliveryUpdates(waId, false, null);
+        mockDeliveryUpdates(waId, sendTextMessage);
 
         session.step = "done";
         

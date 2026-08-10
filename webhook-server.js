@@ -56,17 +56,21 @@ app.post("/webhook", (req, res) => {
   console.log("📩 Headers:", JSON.stringify(req.headers, null, 2));
 
   // Verify webhook signature against the RAW request body.
-  // Set ENFORCE_WEBHOOK_SIGNATURE=true to reject requests that fail validation
-  // (recommended for production). Disabled by default for local testing.
+  // Enforced by default in production; opt out locally with
+  // ENFORCE_WEBHOOK_SIGNATURE=false for testing without a real app secret.
   const signature = req.headers["x-hub-signature-256"];
-  if (process.env.ENFORCE_WEBHOOK_SIGNATURE === "true") {
+  const enforceSignature =
+    process.env.ENFORCE_WEBHOOK_SIGNATURE === "true" ||
+    (process.env.NODE_ENV === "production" &&
+      process.env.ENFORCE_WEBHOOK_SIGNATURE !== "false");
+  if (enforceSignature) {
     if (!signature || !verifyWebhookSignature(req, signature)) {
       console.log("⚠️ Invalid webhook signature");
       return res.status(403).send("Forbidden");
     }
   } else if (signature && !verifyWebhookSignature(req, signature)) {
     console.log(
-      "⚠️ Webhook signature mismatch (not enforced — set ENFORCE_WEBHOOK_SIGNATURE=true to enforce)"
+      "⚠️ Webhook signature mismatch (not enforced in this environment — set ENFORCE_WEBHOOK_SIGNATURE=true to enforce)"
     );
   }
 
@@ -149,12 +153,17 @@ app.listen(PORT, '0.0.0.0', () => {
   // Client outreach scheduler
   startOutreachScheduler();
   console.log(`📣 Outreach scheduler: ${isOutreachEnabled() ? "ENABLED" : "PAUSED"} (remind ${process.env.REMINDER_DAYS_BEFORE || 7} days before event)`);
-  console.log(`🛠 Admin dashboard: /admin`);
-
-  if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD === "changeme") {
+  if (!process.env.ADMIN_PASSWORD) {
     console.warn(
-      "⚠️  WARNING: ADMIN_PASSWORD is not set — the /admin dashboard is using the default password 'changeme'. Set ADMIN_PASSWORD in production!"
+      "⚠️  ADMIN_PASSWORD is not set — /admin is DISABLED (503). Set ADMIN_PASSWORD to enable the dashboard."
     );
+  } else {
+    console.log(`🛠 Admin dashboard: /admin`);
+    if (process.env.ADMIN_PASSWORD === "changeme") {
+      console.warn(
+        "⚠️  ADMIN_PASSWORD is set to the well-known value 'changeme'. Change it before exposing this deployment."
+      );
+    }
   }
 });
 

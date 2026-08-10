@@ -10,7 +10,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(express.json());
+// Capture the raw body so webhook HMAC signatures can be verified against the
+// exact bytes Meta signed — re-serializing the parsed object does not round-trip.
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 // Request logging middleware

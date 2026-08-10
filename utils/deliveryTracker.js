@@ -1,11 +1,19 @@
 // utils/deliveryTracker.js - Mock delivery tracking utility
-import { sendTextMessage } from "./whatsappUtils.js";
 
 /**
  * Mock Porter delivery updates
- * Sends delivery status updates to user
+ * Sends delivery status updates to user.
+ *
+ * The sender is injected rather than imported so this works from any entry
+ * point (Cloud API webhook, whatsapp-web.js) without binding to one transport —
+ * importing whatsappUtils here created a circular dependency through
+ * services/messageHandler.js.
+ *
+ * @param {string} userId - Recipient
+ * @param {(userId: string, text: string) => Promise<any>} send - Transport
+ * @param {string} [prefix] - Optional per-message prefix (e.g. group @mention)
  */
-export function mockDeliveryUpdates(userId, isGroup = false, authorId = null) {
+export function mockDeliveryUpdates(userId, send, prefix = "") {
   const updates = [
     "📦 Order packed at warehouse.",
     "🚚 Assigned to Porter delivery partner.",
@@ -18,8 +26,8 @@ export function mockDeliveryUpdates(userId, isGroup = false, authorId = null) {
   const interval = setInterval(async () => {
     if (i < updates.length) {
       try {
-        const message = updates[i];
-        await sendTextMessage(userId, message);
+        const message = `${prefix}${updates[i]}`;
+        await send(userId, message);
         console.log(`📦 Delivery update sent: ${message}`);
         i++;
       } catch (error) {
@@ -31,4 +39,8 @@ export function mockDeliveryUpdates(userId, isGroup = false, authorId = null) {
       console.log("✅ All delivery updates sent");
     }
   }, 10000); // every 10s for demo
+
+  // Don't keep the process alive just for pending demo updates
+  interval.unref?.();
+  return interval;
 }

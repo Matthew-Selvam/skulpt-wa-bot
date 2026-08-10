@@ -33,17 +33,32 @@ import {
 
 const router = express.Router();
 const whatsappAPI = new WhatsAppBusinessAPI();
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "changeme";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
+// With no password configured the dashboard is disabled outright rather than
+// falling back to a shared default — an unset env var must never mean
+// "publicly reachable admin panel".
+const DASHBOARD_DISABLED = !ADMIN_PASSWORD;
 
 function requireAuth(req, res, next) {
+  if (DASHBOARD_DISABLED) {
+    return res
+      .status(503)
+      .json({ error: "Admin dashboard disabled: ADMIN_PASSWORD is not set" });
+  }
   const auth = req.headers.authorization || "";
   const expected = `Bearer ${ADMIN_PASSWORD}`;
+  const authBuf = Buffer.from(auth);
+  const expectedBuf = Buffer.from(expected);
   const valid =
-    auth.length === expected.length &&
-    crypto.timingSafeEqual(Buffer.from(auth), Buffer.from(expected));
+    authBuf.length === expectedBuf.length &&
+    crypto.timingSafeEqual(authBuf, expectedBuf);
   if (valid) return next();
   return res.status(401).json({ error: "Unauthorized" });
 }
+
+export { DASHBOARD_DISABLED, IS_PRODUCTION };
 
 function isBadId(res, id) {
   if (!mongoose.isValidObjectId(id)) {
@@ -85,8 +100,15 @@ function serializeClient(c) {
   };
 }
 
-// Dashboard page (thin shell — data comes from the API)
+// Dashboard page (thin shell — data comes from the API).
+// Served only when a password is configured, so an unconfigured deployment
+// doesn't advertise the admin panel's existence.
 router.get("/", (_req, res) => {
+  if (DASHBOARD_DISABLED) {
+    return res
+      .status(503)
+      .send("Admin dashboard disabled: ADMIN_PASSWORD is not set.");
+  }
   res.sendFile(path.join(process.cwd(), "public", "admin.html"));
 });
 
