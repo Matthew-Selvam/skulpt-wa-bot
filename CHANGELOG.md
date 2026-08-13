@@ -4,6 +4,62 @@ All notable changes to TrophyBot are documented here.
 
 This project follows a phased roadmap; each phase ships as a tagged version.
 
+## [1.3.0] - 2026-08-13
+
+Phase 3 of the phased roadmap: consolidation. Behavior-preserving refactor.
+
+### Changed
+
+- **The conversation state machine now exists once, not three times.**
+  `bot.js`, `services/messageHandler.js`, and `bot-handler.js` each carried a
+  near-identical copy of the welcome → browse → customization → checkout →
+  payment flow. That duplication is exactly how the deployed path ended up
+  missing working invoice delivery and delivery tracking (both fixed in
+  v1.1.0) — a fix applied to one copy never reached the others.
+
+  Added `services/conversationFlow.js` as the single implementation. It returns
+  a list of *actions* (`text`, `document`, `notify-admin`, `delivery-tracking`)
+  rather than sending anything itself, so it is transport-agnostic and testable
+  without a network or database. The three entry points are now thin adapters
+  that translate their own message format in and execute actions with their own
+  transport (Cloud API upload-then-send, or whatsapp-web.js `MessageMedia`).
+
+  Net effect: ~1190 lines of triplicated logic became ~570 lines of adapters
+  plus one 231-line shared flow.
+- **Removed the two duplicate invoice generators** in `bot.js` and
+  `bot-handler.js`; all paths now use `utils/invoiceGenerator.js`, which was
+  already the most complete version (writes to `invoices/`, includes the
+  company name).
+- **Removed the duplicate inline Mongoose models** in `bot.js`, which shadowed
+  the shared `models/Trophy.js` and `models/Order.js` with slightly different
+  schemas.
+
+### Fixed
+
+- `config.js` had `USE_LETTERHEAD: process.env.USE_LETTERHEAD === "true" || true`
+  — always `true`, so the env var was silently ignored. Still defaults to true,
+  but `USE_LETTERHEAD=false` now actually disables the letterhead.
+- A bare numeric-selection check (`!isNaN(text)`) treated an empty message as
+  trophy number 0, indexing `trophies[-1]`. Empty input is now rejected.
+
+### Added
+
+- **The deployed path now notifies the admin when an order is paid.** `bot.js`
+  and `messageHandler.js` already did this; `bot-handler.js` — the one Render
+  actually runs — did not. Unifying the flow closed that gap. Requires
+  `ADMIN_NUMBER` to be set; without it, nothing is sent.
+
+### Verified
+
+37 flow-level checks covering every state transition, all intent shortcuts
+(greeting/help/status), edge cases (invalid selection, reset, browse-after-done,
+step-aware fallbacks), and group vs DM @-mention formatting. Plus a 13-check
+end-to-end run driving a complete order — hi → browse → select → customize →
+checkout → pay — through the real `botHandler` against a real MongoDB, with
+only Meta's Graph API stubbed: confirms the invoice uploads as media and sends
+by ID (not `link`), the admin is notified, the order is marked paid, and the
+session persists at `step=done` with cart and orderId intact.
+
 ## [1.2.0] - 2026-08-13
 
 Phase 2 of the phased roadmap: persistent sessions.

@@ -20,7 +20,11 @@ export const config = {
   ADMIN_NUMBER: process.env.ADMIN_NUMBER,
   
   // Invoice configuration
-  USE_LETTERHEAD: process.env.USE_LETTERHEAD === "true" || true,
+  // `x === "true" || true` is always true — the env var was being ignored.
+  // Still defaults to true, but USE_LETTERHEAD=false now actually disables it.
+  USE_LETTERHEAD: process.env.USE_LETTERHEAD
+    ? process.env.USE_LETTERHEAD === "true"
+    : true,
   LETTERHEAD_PATH: process.env.LETTERHEAD_PATH || "./letterhead_template.png",
   COMPANY_NAME: process.env.COMPANY_NAME || "THYNK UNLIMITED",
   COMPANY_TAGLINE: process.env.COMPANY_TAGLINE || "Creative Company",

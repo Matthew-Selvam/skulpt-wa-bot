@@ -1,7 +1,10 @@
-// bot-handler.js - WhatsApp Business API Message Handler
+// bot-handler.js - WhatsApp Cloud API adapter.
+//
+// Transport + routing only. The conversation state machine lives in
+// services/conversationFlow.js and is shared with the other entry points;
+// this file translates Cloud API webhook payloads into flow input, then
+// executes the actions the flow returns using the Cloud API client.
 import mongoose from "mongoose";
-import PDFDocument from "pdfkit";
-import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import WhatsAppBusinessAPI from "./whatsapp-api-client.js";
@@ -14,6 +17,8 @@ import {
 } from "./services/outreachService.js";
 import { mockDeliveryUpdates } from "./utils/deliveryTracker.js";
 import { getSession, saveSession } from "./services/sessionStore.js";
+import { runConversation, ACTIONS } from "./services/conversationFlow.js";
+import { generateInvoice } from "./utils/invoiceGenerator.js";
 
 dotenv.config();
 
@@ -31,79 +36,12 @@ const BOT_NUMBER = process.env.BOT_NUMBER || "918838975981";
 const BOT_NAME = process.env.BOT_NAME || "Skulpt";
 const USE_LETTERHEAD = process.env.USE_LETTERHEAD === "true" || false;
 const LETTERHEAD_PATH = process.env.LETTERHEAD_PATH || "./letterhead_template.png";
-const COMPANY_NAME = process.env.COMPANY_NAME || "THYNK UNLIMITED";
-const COMPANY_TAGLINE = process.env.COMPANY_TAGLINE || "Creative Company";
-
-// -------------------- INVOICE GENERATOR --------------------
-async function generateInvoice(order, useLetterhead = false, letterheadPath = null) {
-  const filePath = path.join(process.cwd(), `invoice_${order._id}.pdf`);
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument();
-    const stream = fs.createWriteStream(filePath);
-
-    doc.pipe(stream);
-
-    if (useLetterhead && letterheadPath && fs.existsSync(letterheadPath)) {
-      doc.image(letterheadPath, 0, 0, { width: 612, height: 792 });
-      
-      doc.fontSize(18).text("🏆 Trophy Order Invoice", 50, 200, { align: "center" });
-      doc.moveDown(2);
-
-      doc.fontSize(12).text(`Order ID: ${order._id}`, 50, 250);
-      doc.text(`Date: ${order.createdAt.toDateString()}`, 50, 270);
-      doc.text(`Customer: ${order.userId}`, 50, 290);
-      doc.moveDown(2);
-
-      let yPosition = 350;
-      doc.text("Items:", 50, yPosition);
-      yPosition += 20;
-      
-      order.items.forEach((item, index) => {
-        doc.text(`${index + 1}. ${item.name}`, 70, yPosition);
-        doc.text(`₹${item.price}`, 450, yPosition, { align: "right" });
-        yPosition += 20;
-      });
-
-      if (order.customization) {
-        doc.text(`Customization: ${order.customization}`, 50, yPosition + 10);
-        yPosition += 30;
-      }
-
-      doc.fontSize(14).text(`Total: ₹${order.total}`, 450, yPosition + 20, { align: "right" });
-    } else {
-      doc.fontSize(20).text("🏆 Trophy Order Invoice", { align: "center" });
-      doc.moveDown();
-
-      doc.fontSize(12).text(`Order ID: ${order._id}`);
-      doc.text(`Date: ${order.createdAt.toDateString()}`);
-      doc.text(`Customer: ${order.userId}`);
-      doc.moveDown();
-
-      order.items.forEach((item, index) => {
-        doc.text(`${index + 1}. ${item.name} - ₹${item.price}`);
-      });
-
-      if (order.customization) {
-        doc.moveDown();
-        doc.text(`Customization: ${order.customization}`);
-      }
-
-      doc.moveDown();
-      doc.fontSize(14).text(`Total: ₹${order.total}`, { align: "right" });
-    }
-
-    doc.end();
-
-    stream.on("finish", () => resolve(filePath));
-    stream.on("error", (err) => reject(err));
-  });
-}
 
 // -------------------- MESSAGE SENDER --------------------
 async function sendMessage(to, message, mediaUrl = null) {
   try {
     console.log(`📤 Sending message to ${to}:`, message);
-    
+
     if (mediaUrl) {
       console.log(`📎 Media: ${mediaUrl}`);
       // Local files must be uploaded first — the Cloud API only accepts a
@@ -127,19 +65,55 @@ async function sendMessage(to, message, mediaUrl = null) {
   }
 }
 
+/** Execute the actions returned by the conversation flow. */
+async function executeActions(actions, { from, mention }) {
+  for (const action of actions) {
+    switch (action.type) {
+      case ACTIONS.TEXT:
+        await sendMessage(from, action.body);
+        break;
+
+      case ACTIONS.DOCUMENT:
+        await sendMessage(from, action.caption, action.path);
+        break;
+
+      case ACTIONS.NOTIFY_ADMIN: {
+        const admin = process.env.ADMIN_NUMBER;
+        if (admin) {
+          try {
+            await sendMessage(admin.replace(/\D/g, ""), action.body);
+          } catch (err) {
+            // A failed admin notice must never fail the customer's order
+            console.error("⚠️ Failed to notify admin:", err.message);
+          }
+        }
+        break;
+      }
+
+      case ACTIONS.DELIVERY_TRACKING:
+        mockDeliveryUpdates(from, (to, text) => sendMessage(to, text), action.prefix || "");
+        break;
+
+      default:
+        console.warn("⚠️ Unknown action type:", action.type);
+    }
+  }
+}
+
 // -------------------- MESSAGE HANDLER --------------------
 export async function botHandler(message, businessAccountId) {
   try {
     const from = message.from;
     const text = message.text?.body || "";
-    const messageType = message.type;
-    
+
     console.log(`📩 Processing message from ${from}: ${text}`);
 
     // Check if it's a group message
-    const isGroup = from.includes('@g.us');
-    const isGroupMention = isGroup && text.toLowerCase().includes(`@${BOT_NAME.toLowerCase()}`);
-    const isBotNumberMention = isGroup && text.includes('@') && text.includes(BOT_NUMBER);
+    const isGroup = from.includes("@g.us");
+    const isGroupMention =
+      isGroup && text.toLowerCase().includes(`@${BOT_NAME.toLowerCase()}`);
+    const isBotNumberMention =
+      isGroup && text.includes("@") && text.includes(BOT_NUMBER);
     const isReplyToBot = message.context?.replied_message_id; // This would need to be tracked
 
     // Skip if it's a group message without proper mention
@@ -149,14 +123,17 @@ export async function botHandler(message, businessAccountId) {
 
     const userId = isGroup ? message.from : from;
     const sessionKey = isGroup ? `${from}_${userId}` : from;
+    const mention = userId.split("@")[0];
 
     // Clean text for processing
     let cleanText = text.toLowerCase();
     if (isGroupMention) {
-      cleanText = cleanText.replace(new RegExp(`@${BOT_NAME.toLowerCase()}\\s*`, 'gi'), '').trim();
+      cleanText = cleanText
+        .replace(new RegExp(`@${BOT_NAME.toLowerCase()}\\s*`, "gi"), "")
+        .trim();
     }
     if (isBotNumberMention) {
-      cleanText = cleanText.replace(/@\d+\s*/g, '').trim();
+      cleanText = cleanText.replace(/@\d+\s*/g, "").trim();
     }
 
     // Load (or create) the persistent session for this chat
@@ -168,7 +145,7 @@ export async function botHandler(message, businessAccountId) {
 
     if (created) {
       const welcomeMsg = isGroup
-        ? `👋 Welcome to TrophyBot! @${userId.split('@')[0]}\nReply *browse* to see our trophies.`
+        ? `👋 Welcome to TrophyBot! @${mention}\nReply *browse* to see our trophies.`
         : "👋 Welcome to TrophyBot!\nReply *browse* to see our trophies.";
 
       await sendMessage(from, welcomeMsg);
@@ -184,52 +161,11 @@ export async function botHandler(message, businessAccountId) {
       return;
     }
 
-    // Detect greetings and commands
-    const isGreeting = /^(hi|hello|hey|hii|hiii|good morning|good afternoon|good evening|namaste|namaskar)/.test(cleanText);
-    const isHelpRequest = /^(help|menu|start|begin|commands?)/.test(cleanText);
-    const isStatusRequest = /^(status|order|my order|track)/.test(cleanText);
-
-    // Handle greetings
-    if (isGreeting) {
-      const greetingMsg = isGroup
-        ? `👋 Hello @${userId.split('@')[0]}! Welcome to TrophyBot! 🏆\n\nI can help you:\n• Browse our trophy collection\n• Place custom orders\n• Track your deliveries\n\nType *browse* to see our trophies or *help* for more options!`
-        : "👋 Hello! Welcome to TrophyBot! 🏆\n\nI can help you:\n• Browse our trophy collection\n• Place custom orders\n• Track your deliveries\n\nType *browse* to see our trophies or *help* for more options!";
-      await sendMessage(from, greetingMsg);
-      return;
-    }
-
-    // Handle help requests
-    if (isHelpRequest) {
-      const helpMsg = isGroup
-        ? `🆘 @${userId.split('@')[0]} Here's how to use TrophyBot:\n\n📋 **Commands:**\n• *browse* - See available trophies\n• *reset* - Start over\n• *status* - Check your order\n• *help* - Show this menu\n\n🛒 **Order Process:**\n1. Browse trophies\n2. Select by number\n3. Add customization\n4. Checkout & pay\n5. Track delivery\n\n💡 **Tip:** You can reply to my messages or use @skulpt commands!`
-        : "🆘 Here's how to use TrophyBot:\n\n📋 **Commands:**\n• *browse* - See available trophies\n• *reset* - Start over\n• *status* - Check your order\n• *help* - Show this menu\n\n🛒 **Order Process:**\n1. Browse trophies\n2. Select by number\n3. Add customization\n4. Checkout & pay\n5. Track delivery";
-      await sendMessage(from, helpMsg);
-      return;
-    }
-
-    // Handle status requests
-    if (isStatusRequest) {
-      if (session.orderId) {
-        const order = await Order.findById(session.orderId);
-        if (order) {
-          const statusMsg = isGroup
-            ? `📦 @${userId.split('@')[0]} Your Order Status:\n\n🆔 Order ID: ${order._id}\n💰 Total: ₹${order.total}\n📊 Status: ${order.status}\n📅 Date: ${order.createdAt.toDateString()}\n\nItems: ${order.items.map(item => item.name).join(', ')}`
-            : `📦 Your Order Status:\n\n🆔 Order ID: ${order._id}\n💰 Total: ₹${order.total}\n📊 Status: ${order.status}\n📅 Date: ${order.createdAt.toDateString()}\n\nItems: ${order.items.map(item => item.name).join(', ')}`;
-          await sendMessage(from, statusMsg);
-          return;
-        }
-      }
-      const noOrderMsg = isGroup
-        ? `❓ @${userId.split('@')[0]} No active orders found. Type *browse* to start shopping!`
-        : "❓ No active orders found. Type *browse* to start shopping!";
-      await sendMessage(from, noOrderMsg);
-      return;
-    }
-
-    // Client outreach reply handling (replies to recurring reminders)
+    // Client outreach reply handling (replies to recurring reminders).
     // Only intercept when the user isn't mid-order, and only in DMs.
     // Skip known bot commands so a normal "browse" isn't mistaken for a reply.
-    const isOutreachCommand = /^(browse|checkout|pay|reset|menu|start|back)\b|^\d+$/.test(cleanText);
+    const isOutreachCommand =
+      /^(browse|checkout|pay|reset|menu|start|back)\b|^\d+$/.test(cleanText);
     if (
       !isGroup &&
       !isOutreachCommand &&
@@ -248,189 +184,52 @@ export async function botHandler(message, businessAccountId) {
       }
     }
 
-    // Reset session if user says browse and session is done
-    if (cleanText === "browse" && session.step === "done") {
-      session.step = "welcome";
-      session.cart = [];
-      session.customization = "";
-    }
+    // --- Shared conversation flow ---
+    const stepBefore = session.step;
+    const actions = await runConversation({
+      text: cleanText,
+      rawText: text,
+      session,
+      isGroup,
+      mention,
+      deps: {
+        Trophy,
+        Order,
+        generateInvoice,
+        useLetterhead: USE_LETTERHEAD,
+        letterheadPath: LETTERHEAD_PATH,
+        adminNumber: process.env.ADMIN_NUMBER,
+      },
+    });
 
-    // Handle browse command
-    if (session.step === "welcome" && (cleanText === "browse" || cleanText.includes("browse"))) {
-      const trophies = await Trophy.find();
-      if (trophies.length === 0) {
-        const noTrophiesMsg = isGroup
-          ? `⚠️ @${userId.split('@')[0]} No trophies found in catalog.`
-          : "⚠️ No trophies found in catalog.";
-        await sendMessage(from, noTrophiesMsg);
-        return;
-      }
-
-      let response = isGroup
-        ? `🏆 *Available Trophies* @${userId.split('@')[0]}:\n\n`
-        : "🏆 *Available Trophies:*\n\n";
-      trophies.forEach((t, i) => {
-        response += `${i + 1}. ${t.name} - *₹${t.price}*\n`;
-      });
-      response += "\n💡 *How to order:*\n• Reply with the *number* to select a trophy\n• Add your customization text\n• Proceed to checkout\n\n🛒 Ready to start? Just reply with a number!";
-      session.step = "browse";
-      await sendMessage(from, response);
-    }
-
-    // Handle trophy selection
-    else if (session.step === "browse" && !isNaN(cleanText)) {
-      const index = parseInt(cleanText) - 1;
-      const trophies = await Trophy.find();
-      if (trophies[index]) {
-        const trophy = trophies[index];
-        // Store a plain object, not the live Mongoose document — the cart
-        // now round-trips through Mongo on every save.
-        session.cart.push(trophy.toObject());
-        session.step = "customization";
-        const customMsg = isGroup
-          ? `✅ @${userId.split('@')[0]} *${trophy.name}* added to cart! 🛒\n\n🖊 *Customization:*\nPlease enter the text you want engraved on this trophy.\n\n💡 *Examples:*\n• "Best Employee 2024"\n• "Championship Winner"\n• "Outstanding Performance"\n\nJust reply with your customization text!`
-          : `✅ *${trophy.name}* added to cart! 🛒\n\n🖊 *Customization:*\nPlease enter the text you want engraved on this trophy.\n\n💡 *Examples:*\n• "Best Employee 2024"\n• "Championship Winner"\n• "Outstanding Performance"\n\nJust reply with your customization text!`;
-        await sendMessage(from, customMsg);
-      } else {
-        const invalidMsg = isGroup
-          ? `⚠️ @${userId.split('@')[0]} Invalid choice. Try again.`
-          : "⚠️ Invalid choice. Try again.";
-        await sendMessage(from, invalidMsg);
-      }
-    }
-
-    // Handle customization
-    else if (session.step === "customization") {
-      session.customization = text;
-      session.step = "checkout";
-      const checkoutMsg = isGroup
-        ? `✅ @${userId.split('@')[0]} *Customization added!* ✨\n\n📝 *Your customization:* "${text}"\n\n🛒 *Ready to checkout?*\nReply *checkout* to proceed with your order!`
-        : `✅ *Customization added!* ✨\n\n📝 *Your customization:* "${text}"\n\n🛒 *Ready to checkout?*\nReply *checkout* to proceed with your order!`;
-      await sendMessage(from, checkoutMsg);
-    }
-
-    // Handle checkout
-    else if (session.step === "checkout" && (cleanText === "checkout" || cleanText.includes("checkout"))) {
-      const total = session.cart.reduce((sum, item) => sum + item.price, 0);
-      const order = new Order({
-        userId: session.userId,
-        items: session.cart,
-        total,
-        customization: session.customization,
-        status: "pending",
-        groupId: session.groupId,
-      });
-      await order.save();
-
-      // Register / update the client record for future outreach
-      if (!isGroup) {
-        try {
-          const cleanPhone = from.replace(/\D/g, "");
-          if (cleanPhone) {
-            const existing = await Client.findOne({ phone: cleanPhone });
-            if (existing) {
-              existing.lastOrderAt = new Date();
-              await existing.save();
-            } else {
-              await Client.create({
-                name: `Client ${cleanPhone.slice(-4)}`,
-                phone: cleanPhone,
-                source: "order",
-                lastOrderAt: new Date(),
-              });
-            }
-          }
-        } catch (err) {
-          console.error("⚠️ Failed to register client:", err.message);
-        }
-      }
-
-      session.orderId = order._id;
-      session.step = "payment";
-
-      const paymentMsg = isGroup
-        ? `🛒 @${userId.split('@')[0]} *Order Summary:*\n\n📦 *Items:*\n${session.cart.map(item => `• ${item.name} - ₹${item.price}`).join('\n')}\n\n📝 *Customization:* "${session.customization}"\n\n💰 *Total Amount: ₹${total}*\n\n💳 *Ready to pay?*\nReply *pay* to confirm your order!`
-        : `🛒 *Order Summary:*\n\n📦 *Items:*\n${session.cart.map(item => `• ${item.name} - ₹${item.price}`).join('\n')}\n\n📝 *Customization:* "${session.customization}"\n\n💰 *Total Amount: ₹${total}*\n\n💳 *Ready to pay?*\nReply *pay* to confirm your order!`;
-      await sendMessage(from, paymentMsg);
-    }
-
-    // Handle payment
-    else if (session.step === "payment" && (cleanText === "pay" || cleanText.includes("pay"))) {
-      const order = await Order.findById(session.orderId);
-      order.status = "paid";
-      await order.save();
-
+    // Register / update the client record for future outreach, on the
+    // checkout -> payment transition (i.e. an order was just created).
+    if (!isGroup && stepBefore === "checkout" && session.step === "payment") {
       try {
-        const invoicePath = await generateInvoice(order, USE_LETTERHEAD, LETTERHEAD_PATH);
-        const invoiceCaption = isGroup
-          ? `🎉 @${userId.split('@')[0]} *Order Confirmed!* ✅\n\n📄 *Invoice attached*\n🚚 *Delivery tracking will start soon*\n\nThank you for choosing TrophyBot! 🏆`
-          : "🎉 *Order Confirmed!* ✅\n\n📄 *Invoice attached*\n🚚 *Delivery tracking will start soon*\n\nThank you for choosing TrophyBot! 🏆";
-        
-        await sendMessage(from, invoiceCaption, invoicePath);
+        const cleanPhone = from.replace(/\D/g, "");
+        if (cleanPhone) {
+          const existing = await Client.findOne({ phone: cleanPhone });
+          if (existing) {
+            existing.lastOrderAt = new Date();
+            await existing.save();
+          } else {
+            await Client.create({
+              name: `Client ${cleanPhone.slice(-4)}`,
+              phone: cleanPhone,
+              source: "order",
+              lastOrderAt: new Date(),
+            });
+          }
+        }
       } catch (err) {
-        console.error("❌ Invoice generation failed:", err);
-        const errorMsg = isGroup
-          ? `⚠️ @${userId.split('@')[0]} Could not generate invoice.`
-          : "⚠️ Could not generate invoice.";
-        await sendMessage(from, errorMsg);
+        console.error("⚠️ Failed to register client:", err.message);
       }
-
-      // Start delivery tracking regardless of invoice outcome — the order is
-      // paid, so the customer should get status updates either way.
-      mockDeliveryUpdates(
-        from,
-        (to, text) => sendMessage(to, text),
-        isGroup ? `@${userId.split('@')[0]} ` : ""
-      );
-
-      session.step = "done";
     }
 
-    // Reset command
-    else if (cleanText === "reset" || cleanText === "start" || cleanText === "menu") {
-      session.step = "welcome";
-      session.cart = [];
-      session.customization = "";
-      const resetMsg = isGroup
-        ? `🔄 @${userId.split('@')[0]} Session reset! Reply *browse* to see our trophies.`
-        : "🔄 Session reset! Reply *browse* to see our trophies.";
-      await sendMessage(from, resetMsg);
-    }
+    await executeActions(actions, { from, mention });
 
-    // Fallback
-    else {
-      let fallbackMsg;
-      if (session.step === "welcome") {
-        fallbackMsg = isGroup
-          ? `❓ @${userId.split('@')[0]} I didn't understand that. Try:\n• *browse* - See trophies\n• *help* - Show commands\n• *hi* - Get started`
-          : "❓ I didn't understand that. Try:\n• *browse* - See trophies\n• *help* - Show commands\n• *hi* - Get started";
-      } else if (session.step === "browse") {
-        fallbackMsg = isGroup
-          ? `❓ @${userId.split('@')[0]} Please reply with a *number* to select a trophy, or *help* for options.`
-          : "❓ Please reply with a *number* to select a trophy, or *help* for options.";
-      } else if (session.step === "customization") {
-        fallbackMsg = isGroup
-          ? `❓ @${userId.split('@')[0]} Please enter your *customization text* for the trophy.`
-          : "❓ Please enter your *customization text* for the trophy.";
-      } else if (session.step === "checkout") {
-        fallbackMsg = isGroup
-          ? `❓ @${userId.split('@')[0]} Reply *checkout* to proceed with your order.`
-          : "❓ Reply *checkout* to proceed with your order.";
-      } else if (session.step === "payment") {
-        fallbackMsg = isGroup
-          ? `❓ @${userId.split('@')[0]} Reply *pay* to confirm your order.`
-          : "❓ Reply *pay* to confirm your order.";
-      } else {
-        fallbackMsg = isGroup
-          ? `❓ @${userId.split('@')[0]} Please reply *browse* to see products, *reset* to start over, or *help* for options.`
-          : "❓ Please reply *browse* to see products, *reset* to start over, or *help* for options.";
-      }
-      await sendMessage(from, fallbackMsg);
-    }
-
-    // Persist whatever the branch above mutated (step/cart/customization/orderId)
+    // Persist whatever the flow mutated (step/cart/customization/orderId)
     await saveSession(sessionKey, session);
-
   } catch (error) {
     console.error("❌ Error processing message:", error);
   }
