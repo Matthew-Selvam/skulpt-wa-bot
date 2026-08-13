@@ -6,7 +6,19 @@ const OrderSchema = new mongoose.Schema({
   items: { type: Array, required: true },
   total: { type: Number, required: true },
   customization: { type: String },
-  status: { type: String, default: "pending" },
+  // Optional reference image the customer sent for the engraving/design.
+  // Stored inline: Meta's media URLs expire, so the bytes have to be kept
+  // somewhere, and trophy-order volumes are far below the 16MB document cap.
+  referenceImage: {
+    data: { type: Buffer },
+    contentType: { type: String },
+    receivedAt: { type: Date },
+  },
+  status: {
+    type: String,
+    enum: ["pending", "paid", "cancelled"],
+    default: "pending",
+  },
   orderRef: {
     type: String,
     unique: true,
@@ -15,5 +27,8 @@ const OrderSchema = new mongoose.Schema({
   groupId: { type: String }, // Store group ID for group orders
   createdAt: { type: Date, default: Date.now },
 });
+
+// History lookups are always "this customer's most recent orders"
+OrderSchema.index({ userId: 1, createdAt: -1 });
 
 export const Order = mongoose.model("Order", OrderSchema);

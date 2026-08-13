@@ -202,16 +202,28 @@ test("edge cases", async (t) => {
     assert.equal(s.step, "checkout");
   });
 
-  await t.test("KNOWN QUIRK: greeting-like engraving text is intercepted", async () => {
-    // Pre-existing behavior in all three original implementations: the
-    // greeting/help/status checks run before the customization capture, so a
-    // customer cannot engrave text starting with "hi", "help", "status", etc.
-    // Pinned here so a future change to the ordering is a deliberate decision.
-    const s = newSession({ step: "customization" });
-    const a = await run("Hello Team 2026", s, deps);
-    assert.match(texts(a)[0], /Welcome to TrophyBot/);
-    assert.equal(s.customization, "", "engraving text was swallowed by the greeting branch");
-    assert.equal(s.step, "customization", "still stuck waiting for customization");
+  await t.test("greeting-like text is accepted as engraving (fixed in v1.5.0)", async () => {
+    // Until v1.5.0 the greeting/help/status checks ran before the customization
+    // capture, so a customer could not engrave "Hello 2026" — the bot answered
+    // the greeting and left them stuck. Those shortcuts are now suppressed
+    // while awaiting customization.
+    for (const engraving of ["Hello Team 2026", "Help Desk Hero", "Status Award 2026", "Track Champion"]) {
+      const s = newSession({ step: "customization" });
+      const a = await run(engraving, s, deps);
+      assert.equal(s.customization, engraving, `should engrave: ${engraving}`);
+      assert.equal(s.step, "checkout");
+      assert.match(texts(a)[0], /Customization added/);
+    }
+  });
+
+  await t.test("cancel and reset still escape the customization step", async () => {
+    for (const escape of ["cancel", "reset"]) {
+      const s = newSession({ step: "customization", cart: [{ name: "x", price: 5 }] });
+      await run(escape, s, deps);
+      assert.equal(s.step, "welcome", `${escape} should exit customization`);
+      assert.equal(s.cart.length, 0);
+      assert.equal(s.customization, "");
+    }
   });
 });
 

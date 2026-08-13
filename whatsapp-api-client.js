@@ -286,8 +286,11 @@ class WhatsAppBusinessAPI {
       });
 
       if (response.ok) {
-        const buffer = await response.buffer();
-        return { success: true, data: buffer };
+        // arrayBuffer() rather than the deprecated node-fetch .buffer(),
+        // which is removed in node-fetch v4.
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const contentType = response.headers.get("content-type") || "image/jpeg";
+        return { success: true, data: buffer, contentType };
       } else {
         console.error("❌ Failed to download media");
         return { success: false, error: "Failed to download media" };

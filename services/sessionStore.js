@@ -10,6 +10,7 @@ function defaults() {
     cart: [],
     customization: "",
     orderId: null,
+    pendingImage: null,
     isGroup: false,
     groupId: null,
     userId: null,

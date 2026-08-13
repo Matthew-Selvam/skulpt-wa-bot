@@ -36,6 +36,8 @@ const BOT_NUMBER = process.env.BOT_NUMBER || "918838975981";
 const BOT_NAME = process.env.BOT_NAME || "Skulpt";
 const USE_LETTERHEAD = process.env.USE_LETTERHEAD === "true" || false;
 const LETTERHEAD_PATH = process.env.LETTERHEAD_PATH || "./letterhead_template.png";
+// Keep reference images well under MongoDB's 16MB document cap
+const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES || 5 * 1024 * 1024);
 
 // -------------------- MESSAGE SENDER --------------------
 async function sendMessage(to, message, mediaUrl = null) {
@@ -101,10 +103,41 @@ async function executeActions(actions, { from, mention }) {
 }
 
 // -------------------- MESSAGE HANDLER --------------------
+/**
+ * Pull an image the customer sent down from the Cloud API.
+ * Meta's media URLs are short-lived and require auth, so the bytes have to be
+ * fetched now and stored — a URL kept for later would stop resolving.
+ * Returns { data (base64), contentType } or null.
+ */
+async function downloadInboundImage(mediaId) {
+  try {
+    const urlRes = await whatsappAPI.getMediaUrl(mediaId);
+    if (!urlRes.success) {
+      console.error("⚠️ Could not resolve media URL:", urlRes.error);
+      return null;
+    }
+    const dl = await whatsappAPI.downloadMedia(urlRes.url);
+    if (!dl.success) {
+      console.error("⚠️ Could not download media:", dl.error);
+      return null;
+    }
+    if (dl.data.length > MAX_IMAGE_BYTES) {
+      console.warn(`⚠️ Reference image too large (${dl.data.length} bytes), skipping`);
+      return null;
+    }
+    // base64 in the session doc; converted back to a Buffer on the Order
+    return { data: dl.data.toString("base64"), contentType: dl.contentType || "image/jpeg" };
+  } catch (err) {
+    console.error("⚠️ Error downloading reference image:", err.message);
+    return null;
+  }
+}
+
 export async function botHandler(message, businessAccountId) {
   try {
     const from = message.from;
-    const text = message.text?.body || "";
+    // An image's caption arrives on the image object, not as a text message
+    const text = message.text?.body || message.image?.caption || "";
 
     console.log(`📩 Processing message from ${from}: ${text}`);
 
@@ -150,6 +183,38 @@ export async function botHandler(message, businessAccountId) {
 
       await sendMessage(from, welcomeMsg);
       return;
+    }
+
+    // Reference photo for the engraving/design. Accepted while the customer is
+    // choosing or describing their trophy; the bytes are attached to the Order
+    // at checkout. An image caption still flows through as normal text.
+    if (message.type === "image" && message.image?.id) {
+      if (["browse", "customization", "checkout"].includes(session.step)) {
+        const image = await downloadInboundImage(message.image.id);
+        if (image) {
+          session.pendingImage = image;
+          await saveSession(sessionKey, session);
+          await sendMessage(
+            from,
+            `🖼 ${isGroup ? `@${mention} ` : ""}Reference image received! It'll be attached to your order.` +
+              (session.step === "customization"
+                ? "\n\n🖊 Now send the *text* you'd like engraved."
+                : "")
+          );
+        } else {
+          await sendMessage(
+            from,
+            `⚠️ ${isGroup ? `@${mention} ` : ""}Couldn't process that image. Please try a smaller one, or continue with text.`
+          );
+        }
+      } else {
+        await sendMessage(
+          from,
+          `📷 ${isGroup ? `@${mention} ` : ""}Thanks! Start an order with *browse* to attach a reference image.`
+        );
+      }
+      // A caption is handled as text on its own turn; nothing more to do here.
+      if (!message.image?.caption) return;
     }
 
     // Admin-only client management & outreach commands

@@ -21,10 +21,26 @@ export const ACTIONS = {
   NOTIFY_ADMIN: "notify-admin",
 };
 
+// \b throughout: without it "hi" matches "history", "start" matches "started",
+// and those commands become unreachable.
 const GREETING_RE =
-  /^(hi|hello|hey|hii|hiii|good morning|good afternoon|good evening|namaste|namaskar)/;
-const HELP_RE = /^(help|menu|start|begin|commands?)/;
-const STATUS_RE = /^(status|order|my order|track)/;
+  /^(hi|hello|hey|hii|hiii|good morning|good afternoon|good evening|namaste|namaskar)\b/;
+const HELP_RE = /^(help|menu|start|begin|commands?)\b/;
+// \b matters: without it "my orders" would match the "my order" alternative
+// here and never reach HISTORY_RE below.
+const STATUS_RE = /^(status|order|my order|track)\b/;
+const HISTORY_RE = /^(history|past orders?|my orders)\b/;
+const REORDER_RE = /^reorder\s*(\d+)/;
+
+const STATUS_ICONS = { pending: "🕒", paid: "✅", cancelled: "🚫" };
+
+/** Working-day estimate shown at checkout, before payment. */
+const DELIVERY_DAYS = Number(process.env.DELIVERY_ESTIMATE_DAYS || 5);
+
+function deliveryEstimate(days = DELIVERY_DAYS) {
+  const eta = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  return eta.toDateString();
+}
 
 /**
  * Advance the conversation by one message.
@@ -54,22 +70,28 @@ export async function runConversation({
   const at = isGroup ? `@${mention} ` : "";
 
   // --- Intent shortcuts: these answer immediately without advancing the flow ---
+  //
+  // Suppressed while awaiting customization text, otherwise a customer cannot
+  // engrave "Hello 2026" or "Team Status Award" — the greeting/status branch
+  // would swallow it and leave them stuck. `cancel` and `reset` still work as
+  // escape hatches from that step (handled below).
+  const awaitingCustomization = session.step === "customization";
 
-  if (GREETING_RE.test(text)) {
+  if (!awaitingCustomization && GREETING_RE.test(text)) {
     say(
       `👋 ${isGroup ? `Hello @${mention}!` : "Hello!"} Welcome to TrophyBot! 🏆\n\nI can help you:\n• Browse our trophy collection\n• Place custom orders\n• Track your deliveries\n\nType *browse* to see our trophies or *help* for more options!`
     );
     return actions;
   }
 
-  if (HELP_RE.test(text)) {
+  if (!awaitingCustomization && HELP_RE.test(text)) {
     say(
-      `🆘 ${at}Here's how to use TrophyBot:\n\n📋 *Commands:*\n• *browse* - See available trophies\n• *reset* - Start over\n• *status* - Check your order\n• *help* - Show this menu\n\n🛒 *Order Process:*\n1. Browse trophies\n2. Select by number\n3. Add customization\n4. Checkout & pay\n5. Track delivery`
+      `🆘 ${at}Here's how to use TrophyBot:\n\n📋 *Commands:*\n• *browse* - See available trophies\n• *history* - Your recent orders\n• *reorder 1* - Order a past one again\n• *status* - Check your current order\n• *cancel* - Cancel an unpaid order\n• *reset* - Start over\n• *help* - Show this menu\n\n🛒 *Order Process:*\n1. Browse trophies\n2. Select by number\n3. Add customization (text, or send a *photo*)\n4. Checkout & pay\n5. Track delivery`
     );
     return actions;
   }
 
-  if (STATUS_RE.test(text)) {
+  if (!awaitingCustomization && STATUS_RE.test(text)) {
     if (session.orderId) {
       const order = await Order.findById(session.orderId);
       if (order) {
@@ -80,6 +102,81 @@ export async function runConversation({
       }
     }
     say(`❓ ${at}No active orders found. Type *browse* to start shopping!`);
+    return actions;
+  }
+
+  // --- Order history ---
+  if (!awaitingCustomization && HISTORY_RE.test(text)) {
+    const past = await Order.find({ userId: session.userId })
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    if (!past.length) {
+      say(`📭 ${at}No past orders yet. Reply *browse* to place your first one!`);
+      return actions;
+    }
+
+    let response = `📚 ${at}*Your recent orders:*\n\n`;
+    past.forEach((o, i) => {
+      const items = o.items.map((it) => it.name).join(", ");
+      response += `${i + 1}. ${STATUS_ICONS[o.status] || ""} *${o.status}* — ₹${o.total}\n   ${items}\n   ${o.createdAt.toDateString()}\n\n`;
+    });
+    response += "🔁 Reply *reorder 1* (or another number) to order the same again.";
+    say(response);
+    return actions;
+  }
+
+  // --- Reorder: copy a past order's items into a fresh cart ---
+  const reorderMatch = awaitingCustomization ? null : text.match(REORDER_RE);
+  if (reorderMatch) {
+    const past = await Order.find({ userId: session.userId })
+      .sort({ createdAt: -1 })
+      .limit(5);
+    const chosen = past[parseInt(reorderMatch[1], 10) - 1];
+
+    if (!chosen) {
+      say(`⚠️ ${at}No such order. Reply *history* to see your recent orders.`);
+      return actions;
+    }
+
+    session.cart = chosen.items.map((it) => ({ ...it }));
+    session.customization = chosen.customization || "";
+    session.pendingImage = null;
+    session.step = "checkout";
+
+    const total = session.cart.reduce((sum, item) => sum + item.price, 0);
+    say(
+      `🔁 ${at}*Reordering:*\n\n📦 ${session.cart.map((i) => `• ${i.name} - ₹${i.price}`).join("\n")}\n📝 *Customization:* "${session.customization}"\n💰 *Total: ₹${total}*\n\nReply *checkout* to confirm, or *reset* to start over.`
+    );
+    return actions;
+  }
+
+  // --- Cancel an unpaid order ---
+  if (!awaitingCustomization && text === "cancel") {
+    if (!session.orderId) {
+      say(`❓ ${at}Nothing to cancel. Reply *browse* to start an order.`);
+      return actions;
+    }
+    const order = await Order.findById(session.orderId);
+    if (!order) {
+      say(`❓ ${at}Nothing to cancel. Reply *browse* to start an order.`);
+      return actions;
+    }
+    if (order.status === "paid") {
+      say(
+        `⚠️ ${at}Order *${order._id}* is already paid and can't be cancelled here.\nPlease contact us directly for help.`
+      );
+      return actions;
+    }
+
+    order.status = "cancelled";
+    await order.save();
+    session.step = "welcome";
+    session.cart = [];
+    session.customization = "";
+    session.orderId = null;
+    session.pendingImage = null;
+    say(`🚫 ${at}Order cancelled. Reply *browse* to start a new one.`);
     return actions;
   }
 
@@ -136,10 +233,26 @@ export async function runConversation({
 
   // customization -> checkout (free text captured verbatim)
   if (session.step === "customization") {
+    // Escape hatch: the intent shortcuts are suppressed in this step, so
+    // these are the only way out short of finishing the customization.
+    if (text === "cancel" || text === "reset") {
+      session.step = "welcome";
+      session.cart = [];
+      session.customization = "";
+      session.pendingImage = null;
+      say(`🔄 ${at}Cancelled. Reply *browse* to start again.`);
+      return actions;
+    }
+
     session.customization = rawText;
     session.step = "checkout";
+
+    const photoNote = session.pendingImage
+      ? "\n🖼 *Reference image received*"
+      : "\n💡 You can also send a *photo* as a design reference.";
+
     say(
-      `✅ ${at}*Customization added!* ✨\n\n📝 *Your customization:* "${rawText}"\n\n🛒 *Ready to checkout?*\nReply *checkout* to proceed with your order!`
+      `✅ ${at}*Customization added!* ✨\n\n📝 *Your customization:* "${rawText}"${photoNote}\n\n🛒 *Ready to checkout?*\nReply *checkout* to proceed with your order!`
     );
     return actions;
   }
@@ -154,16 +267,29 @@ export async function runConversation({
       customization: session.customization,
       status: "pending",
       groupId: session.groupId,
+      // Carry across the reference photo the adapter downloaded, if any
+      ...(session.pendingImage
+        ? {
+            referenceImage: {
+              data: Buffer.from(session.pendingImage.data, "base64"),
+              contentType: session.pendingImage.contentType,
+              receivedAt: new Date(),
+            },
+          }
+        : {}),
     });
     await order.save();
 
     session.orderId = order._id;
     session.step = "payment";
+    session.pendingImage = null; // now persisted on the order
+
+    const photoLine = order.referenceImage?.data ? "\n🖼 *Reference image attached*" : "";
 
     say(
       `🛒 ${at}*Order Summary:*\n\n📦 *Items:*\n${session.cart
         .map((item) => `• ${item.name} - ₹${item.price}`)
-        .join("\n")}\n\n📝 *Customization:* "${session.customization}"\n\n💰 *Total Amount: ₹${total}*\n\n💳 *Ready to pay?*\nReply *pay* to confirm your order!`
+        .join("\n")}\n\n📝 *Customization:* "${session.customization}"${photoLine}\n\n💰 *Total Amount: ₹${total}*\n🚚 *Estimated delivery:* ${deliveryEstimate()}\n\n💳 *Ready to pay?*\nReply *pay* to confirm your order!\n\n_Reply *cancel* to cancel this order._`
     );
     return actions;
   }

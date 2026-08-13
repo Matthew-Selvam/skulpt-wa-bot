@@ -4,6 +4,57 @@ All notable changes to TrophyBot are documented here.
 
 This project follows a phased roadmap; each phase ships as a tagged version.
 
+## [1.5.0] - 2026-08-13
+
+Phase 5 of the phased roadmap: customer-facing features.
+
+### Added
+
+- **Order history** — `history` (or `my orders`) lists the customer's five most
+  recent orders with status, total, items, and date. Scoped to the requesting
+  customer.
+- **Reorder** — `reorder 1` copies a past order's items and customization into
+  a fresh cart at the checkout step.
+- **Cancel** — `cancel` cancels an unpaid order and clears the session. Paid
+  orders are refused with a message directing the customer to get in touch,
+  so a paid order can't be voided from chat.
+- **Reference photos** — customers can send an image during an order as a
+  design reference. The bytes are downloaded at receipt (Meta's media URLs are
+  short-lived and require auth, so a stored URL would stop resolving) and
+  attached to the Order in MongoDB. Capped at 5MB via `MAX_IMAGE_BYTES`, well
+  under the 16MB document limit. Image captions are handled as normal text.
+- **Delivery estimate at checkout** — shown before payment rather than only
+  after, configurable via `DELIVERY_ESTIMATE_DAYS` (default 5).
+
+### Fixed
+
+- **Customers can now engrave greeting-like text.** The greeting/help/status
+  shortcuts ran before the customization capture, so "Hello Team 2026",
+  "Status Award", or "Track Champion" were swallowed as commands, leaving the
+  customer stuck. Those shortcuts are suppressed while awaiting customization;
+  `cancel` and `reset` remain as escape hatches.
+- **`history` was unreachable** — the greeting regex `/^(hi|...)/` had no word
+  boundary, so "history" matched "hi" and returned a greeting. Added `\b`
+  throughout; the same bug made "started" match "start".
+- **`my orders` reached current-order status instead of history**, because
+  `STATUS_RE`'s "my order" alternative matched it first.
+- `downloadMedia` used node-fetch's deprecated `.buffer()`, removed in v4;
+  switched to `arrayBuffer()` and it now also returns the content type.
+
+### Changed
+
+- `Order.status` is now an enum (`pending` / `paid` / `cancelled`), and orders
+  are indexed on `(userId, createdAt)` for history lookups.
+
+### Verified
+
+73 unit tests (20 new, covering history scoping, reorder, cancel-vs-paid,
+photo persistence, and the delivery estimate) plus a 15-check end-to-end run
+against a real MongoDB: a photo is downloaded through Meta's two-step media
+API, held on the session, persisted to the Order as a Buffer with bytes
+round-tripping intact, and cleared afterwards; then cancel, history, and
+reorder are exercised on real records.
+
 ## [1.4.0] - 2026-08-13
 
 Phase 4 of the phased roadmap: tests, rate limiting, structured logging.

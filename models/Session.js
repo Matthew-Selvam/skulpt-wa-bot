@@ -11,6 +11,13 @@ const SessionSchema = new mongoose.Schema({
   cart: { type: Array, default: [] },
   customization: { type: String, default: "" },
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order", default: null },
+  // Reference image received mid-order, held until checkout attaches it to the
+  // Order. base64 rather than Buffer so it survives the plain-object round trip
+  // through getSession/saveSession.
+  pendingImage: {
+    data: { type: String, default: null },
+    contentType: { type: String, default: null },
+  },
   isGroup: { type: Boolean, default: false },
   groupId: { type: String, default: null },
   userId: { type: String, default: null },
