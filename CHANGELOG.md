@@ -4,6 +4,35 @@ All notable changes to TrophyBot are documented here.
 
 This project follows a phased roadmap; each phase ships as a tagged version.
 
+## [1.2.0] - 2026-08-13
+
+Phase 2 of the phased roadmap: persistent sessions.
+
+### Fixed
+
+- **Sessions no longer disappear on restart or redeploy.** Conversation state
+  (`bot-handler.js`, the deployed webhook path) lived in a process-local
+  `Map`, so every Render restart silently dropped every order in progress —
+  a customer mid-checkout would suddenly be back at "welcome" with an empty
+  cart. Replaced with `models/Session.js`, a MongoDB collection keyed by the
+  same identifier the Map used (`chatId`, or `${chatId}_${userId}` in a
+  group), with a 24h sliding-TTL index so abandoned sessions still expire.
+  Added `services/sessionStore.js` (`getSession`/`saveSession`) as the
+  replacement API — same shape callers already relied on
+  (`step`/`cart`/`customization`/`orderId`/...), so `bot-handler.js`'s
+  conversation logic itself didn't need to change, only where state lives.
+
+### Verified
+
+Two independent Node processes sharing only a MongoDB URI — simulating a
+real restart, not just an in-process mock: process A advances a session
+through welcome → browse → customization → checkout → payment and exits;
+process B (fresh process, fresh connection) loads the same session and
+confirms every field survived, then finishes the flow. Also confirmed the
+TTL index and the unique constraint on the session key are actually present
+on the collection. `mongodb-memory-server` (devDependency) provided the
+throwaway MongoDB instance — an isolated `mongod` binary, no Docker.
+
 ## [1.1.0] - 2026-08-10
 
 Fixes to the deployed webhook path (`webhook-server.js` + `bot-handler.js`).

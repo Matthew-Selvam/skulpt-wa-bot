@@ -13,6 +13,7 @@ import {
   handleClientReply,
 } from "./services/outreachService.js";
 import { mockDeliveryUpdates } from "./utils/deliveryTracker.js";
+import { getSession, saveSession } from "./services/sessionStore.js";
 
 dotenv.config();
 
@@ -32,9 +33,6 @@ const USE_LETTERHEAD = process.env.USE_LETTERHEAD === "true" || false;
 const LETTERHEAD_PATH = process.env.LETTERHEAD_PATH || "./letterhead_template.png";
 const COMPANY_NAME = process.env.COMPANY_NAME || "THYNK UNLIMITED";
 const COMPANY_TAGLINE = process.env.COMPANY_TAGLINE || "Creative Company";
-
-// -------------------- SESSION MANAGEMENT --------------------
-const sessions = new Map();
 
 // -------------------- INVOICE GENERATOR --------------------
 async function generateInvoice(order, useLetterhead = false, letterheadPath = null) {
@@ -161,26 +159,21 @@ export async function botHandler(message, businessAccountId) {
       cleanText = cleanText.replace(/@\d+\s*/g, '').trim();
     }
 
-    // Initialize session if not exists
-    if (!sessions.has(sessionKey)) {
-      sessions.set(sessionKey, {
-        step: "welcome",
-        cart: [],
-        customization: "",
-        isGroup: isGroup,
-        groupId: isGroup ? from : null,
-        userId: userId
-      });
+    // Load (or create) the persistent session for this chat
+    const { session, created } = await getSession(sessionKey, {
+      isGroup: isGroup,
+      groupId: isGroup ? from : null,
+      userId: userId,
+    });
 
+    if (created) {
       const welcomeMsg = isGroup
         ? `👋 Welcome to TrophyBot! @${userId.split('@')[0]}\nReply *browse* to see our trophies.`
         : "👋 Welcome to TrophyBot!\nReply *browse* to see our trophies.";
-      
+
       await sendMessage(from, welcomeMsg);
       return;
     }
-
-    const session = sessions.get(sessionKey);
 
     // Admin-only client management & outreach commands
     const adminResponse = await handleAdminCommand(from, text);
@@ -249,6 +242,7 @@ export async function botHandler(message, businessAccountId) {
         }
         if (reply.positive) {
           session.step = "browse"; // ready to select a trophy
+          await saveSession(sessionKey, session);
         }
         return;
       }
@@ -289,7 +283,9 @@ export async function botHandler(message, businessAccountId) {
       const trophies = await Trophy.find();
       if (trophies[index]) {
         const trophy = trophies[index];
-        session.cart.push(trophy);
+        // Store a plain object, not the live Mongoose document — the cart
+        // now round-trips through Mongo on every save.
+        session.cart.push(trophy.toObject());
         session.step = "customization";
         const customMsg = isGroup
           ? `✅ @${userId.split('@')[0]} *${trophy.name}* added to cart! 🛒\n\n🖊 *Customization:*\nPlease enter the text you want engraved on this trophy.\n\n💡 *Examples:*\n• "Best Employee 2024"\n• "Championship Winner"\n• "Outstanding Performance"\n\nJust reply with your customization text!`
@@ -431,6 +427,9 @@ export async function botHandler(message, businessAccountId) {
       }
       await sendMessage(from, fallbackMsg);
     }
+
+    // Persist whatever the branch above mutated (step/cart/customization/orderId)
+    await saveSession(sessionKey, session);
 
   } catch (error) {
     console.error("❌ Error processing message:", error);
