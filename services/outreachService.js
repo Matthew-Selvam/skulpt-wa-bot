@@ -105,7 +105,9 @@ export async function buildCatalogMessage(header = "") {
 }
 
 // -------------------- REMINDER SCHEDULER --------------------
-function isEventDue(event, now = Date.now()) {
+// Exported for unit testing — the reminder cadence rules are subtle enough
+// (window, max count, spacing, cooldown) to be worth pinning down directly.
+export function isEventDue(event, now = Date.now()) {
   if (event.responded) return false;
   const daysUntil = (new Date(event.date).getTime() - now) / MS_PER_DAY;
   if (daysUntil < 0 || daysUntil > REMINDER_DAYS_BEFORE) return false;

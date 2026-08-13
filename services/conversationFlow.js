@@ -216,10 +216,11 @@ export async function runConversation({
   }
 
   // Step-aware fallback
+  // No "customization" entry: that step consumes any text as the engraving,
+  // so it can never reach this fallback.
   const fallbacks = {
     welcome: `❓ ${at}I didn't understand that. Try:\n• *browse* - See trophies\n• *help* - Show commands\n• *hi* - Get started`,
     browse: `❓ ${at}Please reply with a *number* to select a trophy, or *help* for options.`,
-    customization: `❓ ${at}Please enter your *customization text* for the trophy.`,
     checkout: `❓ ${at}Reply *checkout* to proceed with your order.`,
     payment: `❓ ${at}Reply *pay* to confirm your order.`,
   };

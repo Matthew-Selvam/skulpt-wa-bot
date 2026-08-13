@@ -2,6 +2,7 @@
 import express from "express";
 import crypto from "crypto";
 import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
 import { botHandler } from "./bot-handler.js";
 import adminDashboardRouter from "./routes/adminDashboard.js";
 import {
@@ -28,8 +29,32 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true }));
 
+// Render terminates TLS upstream, so client IPs arrive via X-Forwarded-For.
+// Without this the rate limiter sees every request as coming from one proxy IP.
+app.set("trust proxy", 1);
+
+// Admin login is the credential-guessing surface: keep it tight.
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.ADMIN_RATE_LIMIT || 100),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+});
+
+// Meta can burst legitimately (batched entries, retries), so this is a
+// blast-radius cap rather than a tight throttle.
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.WEBHOOK_RATE_LIMIT || 600),
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Meta expects 200s; a 429 would make it retry harder. Drop quietly instead.
+  handler: (_req, res) => res.status(200).send("EVENT_RECEIVED"),
+});
+
 // Admin dashboard (client management + outreach)
-app.use("/admin", adminDashboardRouter);
+app.use("/admin", adminLimiter, adminDashboardRouter);
 
 // Webhook verification endpoint (GET)
 app.get("/webhook", (req, res) => {
@@ -49,7 +74,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // Webhook message endpoint (POST)
-app.post("/webhook", (req, res) => {
+app.post("/webhook", webhookLimiter, (req, res) => {
   const body = req.body;
 
   console.log("📩 Webhook message received:", JSON.stringify(body, null, 2));

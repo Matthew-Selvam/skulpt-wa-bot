@@ -4,6 +4,61 @@ All notable changes to TrophyBot are documented here.
 
 This project follows a phased roadmap; each phase ships as a tagged version.
 
+## [1.4.0] - 2026-08-13
+
+Phase 4 of the phased roadmap: tests, rate limiting, structured logging.
+
+### Added
+
+- **A real test suite — 53 tests, `npm test`.** Uses Node's built-in
+  `node:test`, so no new test framework dependency.
+  - `test/conversationFlow.test.js` (23) — every state transition, intent
+    shortcuts, edge cases, and group vs DM formatting. Possible because
+    v1.3.0 made the flow return actions instead of sending.
+  - `test/outreach.test.js` (23) — the reminder cadence rules (send window,
+    max count, spacing as the event approaches, cooldown between sends) and
+    reply classification, including that a negative reply containing a
+    positive word ("no thanks, we don't need any") still reads negative.
+  - `test/security.test.js` (7) — webhook HMAC validation: correct signature
+    accepted, tampered body and wrong secret rejected, malformed signatures
+    rejected rather than thrown, and re-serialized JSON *not* validating
+    (the reason raw bytes are required).
+- **Rate limiting** on `/admin` (100 requests / 15 min) and `/webhook`
+  (600 / min), tunable via `ADMIN_RATE_LIMIT` and `WEBHOOK_RATE_LIMIT`.
+  The webhook limiter returns 200 rather than 429 when tripped — Meta treats
+  429 as a failure and retries harder, which would worsen a burst.
+  `trust proxy` is enabled so the limiter sees real client IPs behind Render's
+  proxy instead of counting every request against one address.
+- **Structured logging** (`utils/logger.js`, pino): one JSON object per line
+  in production so Render's log viewer can filter by level and field, pretty
+  and colorized in development. Credentials are redacted wherever they appear
+  in a logged object — access tokens, webhook secrets, admin password,
+  `Authorization` and `X-Hub-Signature-256` headers.
+
+### Changed
+
+- Moved the eleven ad-hoc `test-*.js` scripts from the repo root into
+  `scripts/manual/`. They are one-off probes run directly with `node`, not
+  tests, and their names made the repo look like it had a test suite when
+  `npm test` was still `echo 'No tests specified'`.
+- Exported `isEventDue` from `services/outreachService.js` so the reminder
+  cadence can be tested directly.
+
+### Fixed
+
+- Removed an unreachable `customization` entry from the step-aware fallback
+  table in `conversationFlow.js` — that step consumes any text as the
+  engraving, so its fallback could never fire.
+
+### Known quirk (documented, not changed)
+
+The greeting/help/status checks run *before* the customization capture, so a
+customer cannot engrave text starting with "hi", "help", "status", etc. — the
+bot answers the greeting instead and stays stuck waiting for customization.
+This has been the behavior in all three original implementations. It is now
+pinned by a test so that changing it is a deliberate decision rather than an
+accident.
+
 ## [1.3.0] - 2026-08-13
 
 Phase 3 of the phased roadmap: consolidation. Behavior-preserving refactor.
