@@ -1,5 +1,6 @@
 // models/Order.js - Order model
 import mongoose from "mongoose";
+import crypto from "crypto";
 
 const OrderSchema = new mongoose.Schema({
   userId: { type: String, required: true },
@@ -22,7 +23,11 @@ const OrderSchema = new mongoose.Schema({
   orderRef: {
     type: String,
     unique: true,
-    default: () => Date.now().toString(),
+    // Was Date.now() alone, which collides for two orders created in the same
+    // millisecond — and because the index is unique, the second insert fails
+    // outright rather than degrading. The random suffix makes that vanishingly
+    // unlikely while keeping the timestamp prefix sortable and readable.
+    default: () => `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
   },
   groupId: { type: String }, // Store group ID for group orders
   createdAt: { type: Date, default: Date.now },

@@ -155,6 +155,30 @@
   .countdown { font-size: 12px; color: var(--muted); }
 
   .empty { color: var(--muted); text-align: center; padding: 40px 20px; border: 1px dashed var(--border); border-radius: var(--radius); }
+
+  /* --- analytics + activity log (v1.6.0) --- */
+  .panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 28px; }
+  .panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .panel-head h2 { font-size: 15px; margin: 0; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .metric { background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .metric .v { font-size: 20px; font-weight: 600; }
+  .metric .k { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  /* Pure-CSS bar chart — avoids pulling in a charting library */
+  .chart { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding: 8px 0; overflow-x: auto; }
+  .bar { flex: 1 0 8px; min-width: 8px; background: linear-gradient(180deg, #6c8cff, #3d5bd9); border-radius: 3px 3px 0 0; position: relative; }
+  .bar:hover::after {
+    content: attr(data-label); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+    background: #11131c; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+    font-size: 11px; white-space: nowrap; z-index: 5;
+  }
+  .toplist { list-style: none; padding: 0; margin: 0; }
+  .toplist li { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+  .toplist li:last-child { border-bottom: none; }
+  .audit-row { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; align-items: baseline; }
+  .audit-row:last-child { border-bottom: none; }
+  .audit-time { color: var(--muted); font-size: 11.5px; white-space: nowrap; min-width: 118px; }
+  .audit-action { font-family: ui-monospace, monospace; font-size: 11.5px; color: #8fa4ff; min-width: 130px; }
   .edit-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 16px; }
   .edit-form textarea { grid-column: 1 / -1; resize: vertical; min-height: 54px; }
 
@@ -212,6 +236,19 @@
 <main>
   <section class="stats" id="stats"></section>
 
+  <section class="panel" id="analyticsPanel">
+    <div class="panel-head">
+      <h2>📈 Analytics</h2>
+      <div class="spacer"></div>
+      <select id="analyticsRange" class="input-name">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
+    </div>
+    <div id="analyticsBody"><div class="empty">Loading analytics…</div></div>
+  </section>
+
   <div class="toolbar">
     <button class="btn btn-primary" id="addClientBtn">＋ Add client</button>
     <div class="form-row">
@@ -219,10 +256,23 @@
       <input class="input-phone" id="quickPhone" placeholder="Phone (with country code)" />
       <button class="btn btn-ghost" id="quickAddBtn">Quick add</button>
     </div>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost" id="exportBtn" title="Download all clients as CSV">⬇ Export CSV</button>
+    <button class="btn btn-ghost" id="importBtn" title="Bulk-import clients from a CSV file">⬆ Import CSV</button>
+    <input type="file" id="importFile" accept=".csv,text/csv" style="display:none" />
   </div>
 
   <section class="clients" id="clients">
     <div class="empty">Loading clients…</div>
+  </section>
+
+  <section class="panel" id="auditPanel">
+    <div class="panel-head">
+      <h2>📋 Activity log</h2>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" id="refreshAudit">↻ Refresh</button>
+    </div>
+    <div id="auditBody"><div class="empty">Loading activity…</div></div>
   </section>
 </main>
 
@@ -279,6 +329,10 @@
     if (token) headers.Authorization = "Bearer " + token;
     const res = await fetch(path, Object.assign({}, options, { headers }));
     if (res.status === 401) {
+      // Token is stale or expired — drop it before prompting, otherwise the
+      // retry would send the same dead token again.
+      token = "";
+      sessionStorage.removeItem("adminToken");
       await login();
       return api(path, options);
     }
@@ -290,7 +344,8 @@
   }
 
   async function login() {
-    // Use a direct fetch here (not api()) to avoid 401 → login() recursion.
+    // Exchanges the password for a short-lived token; the password itself is
+    // never stored. Direct fetch (not api()) to avoid 401 → login() recursion.
     for (;;) {
       const pwd = prompt("Enter admin password:");
       if (pwd === null) {
@@ -298,15 +353,23 @@
           '<div class="empty">🔒 Login required — refresh the page to try again.</div>';
         throw new Error("Login cancelled");
       }
-      const res = await fetch("/admin/api/stats", {
-        headers: { Authorization: "Bearer " + pwd },
+      const res = await fetch("/admin/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pwd }),
       });
       if (res.ok) {
-        token = pwd;
+        const data = await res.json();
+        token = data.token;
         sessionStorage.setItem("adminToken", token);
         return;
       }
-      alert("Incorrect password — try again.");
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || "Incorrect password — try again.");
+      if (res.status === 429) {
+        // Locked out — no point looping on more attempts
+        throw new Error(data.error || "Too many attempts");
+      }
     }
   }
 
@@ -447,6 +510,77 @@
       renderClients();
     } catch (e) {
       document.getElementById("clients").innerHTML = `<div class="empty">Failed to load: ${esc(e.message)}</div>`;
+      return; // not authenticated / server down — skip the secondary panels
+    }
+    // These are supplementary: a failure here shouldn't blank the client list
+    loadAnalytics();
+    loadAudit();
+  }
+
+  // ---- analytics ----
+  const money = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+
+  async function loadAnalytics() {
+    const body = document.getElementById("analyticsBody");
+    try {
+      const days = document.getElementById("analyticsRange").value;
+      const a = await api("/admin/api/analytics?days=" + days);
+      const peak = Math.max(1, ...a.revenueByDay.map((d) => d.revenue));
+
+      const bars = a.revenueByDay
+        .map((d) => {
+          const pct = Math.round((d.revenue / peak) * 100);
+          const label = `${d.date}: ${money(d.revenue)} (${d.orders} order${d.orders === 1 ? "" : "s"})`;
+          // Keep a sliver visible for zero days so the axis reads continuously
+          return `<div class="bar" style="height:${Math.max(pct, 2)}%" data-label="${esc(label)}"></div>`;
+        })
+        .join("");
+
+      const top = a.topTrophies.length
+        ? a.topTrophies
+            .map(
+              (t) =>
+                `<li><span>${esc(t.name)}</span><span class="spacer"></span><strong>${t.units}</strong> sold · ${money(t.revenue)}</li>`
+            )
+            .join("")
+        : '<li style="color:var(--muted)">No paid orders yet</li>';
+
+      body.innerHTML = `
+        <div class="metrics">
+          <div class="metric"><div class="v">${money(a.summary.totalRevenue)}</div><div class="k">Total revenue</div></div>
+          <div class="metric"><div class="v">${a.summary.paidOrders}</div><div class="k">Paid orders</div></div>
+          <div class="metric"><div class="v">${money(a.summary.averageOrderValue)}</div><div class="k">Avg order value</div></div>
+          <div class="metric"><div class="v">${a.summary.repeatRate}%</div><div class="k">Repeat customers</div></div>
+          <div class="metric"><div class="v">${a.ordersByStatus.pending}</div><div class="k">Pending</div></div>
+          <div class="metric"><div class="v">${a.ordersByStatus.cancelled}</div><div class="k">Cancelled</div></div>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:4px">Revenue per day (hover a bar for detail)</div>
+        <div class="chart">${bars}</div>
+        <div style="font-size:12.5px;color:var(--muted);margin:16px 0 6px">Top trophies</div>
+        <ul class="toplist">${top}</ul>`;
+    } catch (e) {
+      body.innerHTML = `<div class="empty">Couldn't load analytics: ${esc(e.message)}</div>`;
+    }
+  }
+
+  // ---- activity log ----
+  async function loadAudit() {
+    const body = document.getElementById("auditBody");
+    try {
+      const rows = await api("/admin/api/audit?limit=50");
+      body.innerHTML = rows.length
+        ? rows
+            .map(
+              (r) => `<div class="audit-row">
+                <span class="audit-time">${new Date(r.createdAt).toLocaleString()}</span>
+                <span class="audit-action">${esc(r.action)}</span>
+                <span>${esc(r.summary || "")}</span>
+              </div>`
+            )
+            .join("")
+        : '<div class="empty">No activity recorded yet</div>';
+    } catch (e) {
+      body.innerHTML = `<div class="empty">Couldn't load activity: ${esc(e.message)}</div>`;
     }
   }
 
@@ -527,6 +661,54 @@
       toast(`Synced orders — ${r.added} new client(s) added`);
       load();
     } catch (e) { toast("⚠️ " + e.message); }
+  });
+
+  document.getElementById("analyticsRange").addEventListener("change", loadAnalytics);
+  document.getElementById("refreshAudit").addEventListener("click", loadAudit);
+
+  // ---- CSV export / import ----
+  document.getElementById("exportBtn").addEventListener("click", async () => {
+    try {
+      // Not api(): this returns CSV, not JSON, and we want the raw body
+      const res = await fetch("/admin/api/clients/export", {
+        headers: { Authorization: "Bearer " + token },
+      });
+      if (!res.ok) throw new Error("Export failed (" + res.status + ")");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "clients-" + new Date().toISOString().slice(0, 10) + ".csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast("Client list exported");
+      loadAudit();
+    } catch (e) { toast("⚠️ " + e.message); }
+  });
+
+  document.getElementById("importBtn").addEventListener("click", () => {
+    document.getElementById("importFile").click();
+  });
+
+  document.getElementById("importFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = ""; // allow re-selecting the same file later
+    try {
+      const csv = await file.text();
+      const r = await api("/admin/api/clients/import", {
+        method: "POST",
+        body: JSON.stringify({ csv }),
+      });
+      toast(`Imported — ${r.added} added, ${r.updated} updated, ${r.skipped} skipped`);
+      // Surface per-row problems rather than silently dropping them
+      if (r.errors && r.errors.length) {
+        alert("Some rows were skipped:\n\n" + r.errors.slice(0, 20).join("\n"));
+      }
+      load();
+    } catch (err) { toast("⚠️ " + err.message); }
   });
 
   // event delegation for client actions

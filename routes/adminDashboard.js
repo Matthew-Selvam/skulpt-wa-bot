@@ -19,6 +19,7 @@ import express from "express";
 import crypto from "crypto";
 import path from "path";
 import mongoose from "mongoose";
+import jwt from "jsonwebtoken";
 import { Client } from "../models/Client.js";
 import WhatsAppBusinessAPI from "../whatsapp-api-client.js";
 import {
@@ -30,6 +31,10 @@ import {
   sanitizePhone,
   buildOutreachMessage,
 } from "../services/outreachService.js";
+import { fullReport } from "../services/analytics.js";
+import { exportClientsCsv, importClientsCsv } from "../services/clientCsv.js";
+import { recordAudit, recentAudit } from "../services/auditLog.js";
+import { listTemplates, selectTemplate } from "../services/outreachTemplates.js";
 
 const router = express.Router();
 const whatsappAPI = new WhatsAppBusinessAPI();
@@ -41,6 +46,22 @@ const IS_PRODUCTION = process.env.NODE_ENV === "production";
 // "publicly reachable admin panel".
 const DASHBOARD_DISABLED = !ADMIN_PASSWORD;
 
+// Tokens are signed with a dedicated secret when provided, otherwise derived
+// from the admin password — so rotating the password invalidates old sessions.
+const JWT_SECRET =
+  process.env.ADMIN_JWT_SECRET ||
+  (ADMIN_PASSWORD
+    ? crypto.createHash("sha256").update(`trophybot:${ADMIN_PASSWORD}`).digest("hex")
+    : "");
+const TOKEN_TTL = process.env.ADMIN_SESSION_TTL || "12h";
+
+/** Constant-time password comparison (length-safe). */
+function passwordMatches(candidate) {
+  const a = Buffer.from(String(candidate ?? ""));
+  const b = Buffer.from(ADMIN_PASSWORD);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 function requireAuth(req, res, next) {
   if (DASHBOARD_DISABLED) {
     return res
@@ -48,14 +69,20 @@ function requireAuth(req, res, next) {
       .json({ error: "Admin dashboard disabled: ADMIN_PASSWORD is not set" });
   }
   const auth = req.headers.authorization || "";
-  const expected = `Bearer ${ADMIN_PASSWORD}`;
-  const authBuf = Buffer.from(auth);
-  const expectedBuf = Buffer.from(expected);
-  const valid =
-    authBuf.length === expectedBuf.length &&
-    crypto.timingSafeEqual(authBuf, expectedBuf);
-  if (valid) return next();
-  return res.status(401).json({ error: "Unauthorized" });
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+  try {
+    req.admin = jwt.verify(token, JWT_SECRET);
+    return next();
+  } catch (err) {
+    // Distinguish expiry so the UI can prompt a re-login rather than
+    // reporting a generic failure.
+    const expired = err.name === "TokenExpiredError";
+    return res
+      .status(401)
+      .json({ error: expired ? "Session expired" : "Unauthorized", expired });
+  }
 }
 
 export { DASHBOARD_DISABLED, IS_PRODUCTION };
@@ -112,7 +139,53 @@ router.get("/", (_req, res) => {
   res.sendFile(path.join(process.cwd(), "public", "admin.html"));
 });
 
-// Everything under /api requires the admin password
+// --- Login: exchange the admin password for a short-lived token ---
+// Deliberately mounted before requireAuth, and rate limited separately from
+// the rest of the API since this is the credential-guessing surface.
+const loginAttempts = new Map(); // ip -> { count, first }
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = Number(process.env.ADMIN_LOGIN_MAX_ATTEMPTS || 10);
+
+router.post("/api/login", async (req, res) => {
+  if (DASHBOARD_DISABLED) {
+    return res
+      .status(503)
+      .json({ error: "Admin dashboard disabled: ADMIN_PASSWORD is not set" });
+  }
+
+  const ip = req.ip || "unknown";
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (record && now - record.first < LOGIN_WINDOW_MS && record.count >= LOGIN_MAX_ATTEMPTS) {
+    await recordAudit(
+      { action: "admin.login.blocked", targetType: "admin", summary: `Too many failed logins from ${ip}` },
+      req
+    );
+    return res.status(429).json({ error: "Too many failed attempts. Try again later." });
+  }
+
+  if (!passwordMatches(req.body?.password)) {
+    const next = !record || now - record.first >= LOGIN_WINDOW_MS
+      ? { count: 1, first: now }
+      : { count: record.count + 1, first: record.first };
+    loginAttempts.set(ip, next);
+    await recordAudit(
+      { action: "admin.login.failed", targetType: "admin", summary: `Failed login from ${ip}` },
+      req
+    );
+    return res.status(401).json({ error: "Incorrect password" });
+  }
+
+  loginAttempts.delete(ip);
+  const token = jwt.sign({ sub: "admin" }, JWT_SECRET, { expiresIn: TOKEN_TTL });
+  await recordAudit(
+    { action: "admin.login", targetType: "admin", summary: `Admin signed in from ${ip}` },
+    req
+  );
+  res.json({ token, expiresIn: TOKEN_TTL });
+});
+
+// Everything else under /api requires a valid token
 router.use("/api", requireAuth);
 
 router.get("/api/stats", async (_req, res) => {
@@ -154,6 +227,10 @@ router.post("/api/clients", async (req, res) => {
       return res.status(409).json({ error: `Client with phone ${clean} already exists (${existing.name})` });
     }
     const client = await Client.create({ name, phone: clean, email, notes, source: "admin" });
+    await recordAudit(
+      { action: "client.create", targetType: "client", targetId: String(client._id), summary: `Added client ${name} (${clean})` },
+      req
+    );
     res.status(201).json(serializeClient(client));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -166,11 +243,22 @@ router.put("/api/clients/:id", async (req, res) => {
     const { name, email, notes, active } = req.body || {};
     const client = await Client.findById(req.params.id);
     if (!client) return res.status(404).json({ error: "Not found" });
+    const wasActive = client.active;
     if (name !== undefined) client.name = name;
     if (email !== undefined) client.email = email;
     if (notes !== undefined) client.notes = notes;
     if (active !== undefined) client.active = !!active;
     await client.save();
+
+    // Pause/resume is the change most worth being able to trace later
+    const summary =
+      active !== undefined && wasActive !== client.active
+        ? `${client.active ? "Resumed" : "Paused"} outreach for ${client.name}`
+        : `Updated client ${client.name}`;
+    await recordAudit(
+      { action: "client.update", targetType: "client", targetId: String(client._id), summary },
+      req
+    );
     res.json(serializeClient(client));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -182,6 +270,17 @@ router.delete("/api/clients/:id", async (req, res) => {
     if (isBadId(res, req.params.id)) return;
     const client = await Client.findByIdAndDelete(req.params.id);
     if (!client) return res.status(404).json({ error: "Not found" });
+    await recordAudit(
+      {
+        action: "client.delete",
+        targetType: "client",
+        targetId: String(client._id),
+        summary: `Deleted client ${client.name} (${client.phone})`,
+        // Keep enough to reconstruct the record if the deletion was a mistake
+        metadata: { name: client.name, phone: client.phone, email: client.email, events: client.events?.length || 0 },
+      },
+      req
+    );
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -233,6 +332,16 @@ router.post("/api/clients/:id/events/:eventId/remind", async (req, res) => {
         lastSentAt: new Date(),
       };
       await client.save();
+      await recordAudit(
+        {
+          action: "outreach.remind",
+          targetType: "event",
+          targetId: String(event._id),
+          summary: `Manual reminder sent to ${client.name} for ${event.name}`,
+          metadata: { clientId: String(client._id), template: selectTemplate(event).id },
+        },
+        req
+      );
       res.json(serializeClient(client));
     } else {
       res.status(500).json({ error: "WhatsApp send failed", detail: result.error });
@@ -272,12 +381,102 @@ router.get("/api/outreach", (_req, res) => {
   });
 });
 
-router.post("/api/outreach/toggle", (req, res) => {
+router.post("/api/outreach/toggle", async (req, res) => {
   const { enabled } = req.body || {};
   if (typeof enabled !== "boolean") {
     return res.status(400).json({ error: "enabled (boolean) is required" });
   }
-  res.json({ enabled: setOutreachEnabled(enabled) });
+  const value = setOutreachEnabled(enabled);
+  await recordAudit(
+    {
+      action: "outreach.toggle",
+      targetType: "outreach",
+      summary: `Outreach ${value ? "enabled" : "paused"}`,
+    },
+    req
+  );
+  res.json({ enabled: value });
+});
+
+// -------------------- ANALYTICS --------------------
+router.get("/api/analytics", async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+    res.json(await fullReport({ days }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------- CSV IMPORT / EXPORT --------------------
+router.get("/api/clients/export", async (req, res) => {
+  try {
+    const csv = await exportClientsCsv();
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="clients-${stamp}.csv"`);
+    await recordAudit(
+      { action: "clients.export", targetType: "client", summary: "Exported client list as CSV" },
+      req
+    );
+    res.send(csv);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Accepts raw CSV (text/csv) or JSON { csv: "..." }
+router.post(
+  "/api/clients/import",
+  express.text({ type: "text/csv", limit: "5mb" }),
+  async (req, res) => {
+    try {
+      const csv = typeof req.body === "string" ? req.body : req.body?.csv;
+      if (!csv || !csv.trim()) {
+        return res.status(400).json({ error: "No CSV content provided" });
+      }
+      const result = await importClientsCsv(csv);
+      await recordAudit(
+        {
+          action: "clients.import",
+          targetType: "client",
+          summary: `Imported clients: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped`,
+          metadata: result,
+        },
+        req
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// -------------------- AUDIT LOG --------------------
+router.get("/api/audit", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const entries = await recentAudit(limit);
+    res.json(
+      entries.map((e) => ({
+        id: e._id,
+        action: e.action,
+        actor: e.actor,
+        targetType: e.targetType,
+        targetId: e.targetId,
+        summary: e.summary,
+        metadata: e.metadata,
+        createdAt: e.createdAt,
+      }))
+    );
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------- TEMPLATES --------------------
+router.get("/api/templates", (_req, res) => {
+  res.json({ templates: listTemplates() });
 });
 
 export default router;

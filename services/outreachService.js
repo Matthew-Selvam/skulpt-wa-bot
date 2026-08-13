@@ -8,6 +8,7 @@ import { Client } from "../models/Client.js";
 import { Order } from "../models/Order.js";
 import { Trophy } from "../models/Trophy.js";
 import WhatsAppBusinessAPI from "../whatsapp-api-client.js";
+import { renderOutreach } from "./outreachTemplates.js";
 
 const whatsappAPI = new WhatsAppBusinessAPI();
 
@@ -80,16 +81,13 @@ async function sendAdmin(message) {
 }
 
 // -------------------- MESSAGE BUILDERS --------------------
+/**
+ * Reminder text for a client/event. Wording is chosen from the template
+ * library by event type (birthday, tournament, ...), falling back to the
+ * original generic message when nothing matches.
+ */
 export function buildOutreachMessage(client, event) {
-  return (
-`👋 Hi ${client.name}!
-
-This is a friendly reminder that your *${event.name}* is coming up on *${formatDate(event.date)}*.
-
-Will you be needing any trophies or awards for your event? 🏆
-
-Reply *yes* to browse our collection, or *no* if you're all set.`
-  );
+  return renderOutreach(client, event, formatDate(event.date));
 }
 
 export async function buildCatalogMessage(header = "") {

@@ -4,6 +4,56 @@ All notable changes to TrophyBot are documented here.
 
 This project follows a phased roadmap; each phase ships as a tagged version.
 
+## [1.6.0] - 2026-08-13
+
+Phase 6 of the phased roadmap: admin dashboard and operations.
+
+### Added
+
+- **Analytics on the dashboard** — total revenue, paid orders, average order
+  value, repeat-customer rate, a per-day revenue chart (7/30/90 days), top
+  trophies by units, and a pending/cancelled breakdown. All derived by
+  aggregation from orders the bot already records; nothing new is tracked.
+  The chart is plain CSS, so no charting library was added.
+- **Bulk CSV import/export for clients.** Export downloads the full list;
+  import matches on phone and *updates* rather than duplicating, so the same
+  file can be re-imported safely. Rows that fail are reported individually
+  with a line number and reason rather than failing the whole file. Events
+  round-trip in one column as `Name@YYYY-MM-DD|Name@YYYY-MM-DD`.
+- **Outreach template library** — reminder wording now varies by event type
+  (birthday, anniversary, tournament, graduation, corporate awards), matched
+  on `Client.events[].type` and falling back to the event name, then to the
+  original generic message. `type` existed on the model but had never been used.
+- **Audit log** — admin actions are recorded with actor, IP, and a readable
+  summary: logins (including failures and lockouts), client create/update/
+  delete, pause/resume, manual reminders, imports/exports, and outreach
+  toggles. Deletions keep enough metadata to reconstruct the record. Shown as
+  an activity feed on the dashboard, retained 90 days via a TTL index.
+- **Token-based admin auth.** `POST /admin/api/login` exchanges the password
+  for a signed, expiring token (12h, `ADMIN_SESSION_TTL`); the password is no
+  longer stored in the browser or sent with every request. Failed logins are
+  throttled per IP (10 per 15 min, `ADMIN_LOGIN_MAX_ATTEMPTS`) and recorded.
+  Tokens are signed with `ADMIN_JWT_SECRET`, or a key derived from the admin
+  password — so rotating the password invalidates existing sessions.
+
+### Fixed
+
+- **Orders created in the same millisecond failed to save.** `orderRef`
+  defaulted to `Date.now().toString()` and carries a unique index, so two
+  simultaneous checkouts collided and the second insert was rejected outright.
+  Now suffixed with random bytes. Found because a test seeding several orders
+  at once hit it immediately.
+
+### Verified
+
+89 unit tests (16 new: CSV parsing against quoted commas, escaped quotes,
+embedded newlines and CRLF; template selection and rendering; and a 5000-
+iteration `orderRef` collision check) plus a 32-check end-to-end run against a
+real server and MongoDB covering: token issuance and rejection of forged,
+wrong-secret and expired tokens; a full CSV round-trip including re-import
+updating rather than duplicating; analytics arithmetic checked against seeded
+orders; and the audit trail recording each admin action with usable metadata.
+
 ## [1.5.0] - 2026-08-13
 
 Phase 5 of the phased roadmap: customer-facing features.
