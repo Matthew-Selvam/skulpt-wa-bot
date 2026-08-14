@@ -113,6 +113,10 @@ async function executeActions(actions, chatId) {
         );
         break;
 
+      case ACTIONS.SET_LOCALE:
+        // Session-only on this local-dev path.
+        break;
+
       default:
         console.warn("⚠️ Unknown action type:", action.type);
     }

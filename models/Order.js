@@ -30,6 +30,9 @@ const OrderSchema = new mongoose.Schema({
     default: () => `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
   },
   groupId: { type: String }, // Store group ID for group orders
+  // Populated when a real delivery provider (Porter) dispatches the order
+  deliveryId: { type: String, default: null },
+  trackingUrl: { type: String, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 

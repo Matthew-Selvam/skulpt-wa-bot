@@ -11,6 +11,8 @@ const SessionSchema = new mongoose.Schema({
   cart: { type: Array, default: [] },
   customization: { type: String, default: "" },
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order", default: null },
+  locale: { type: String, default: null }, // null = use DEFAULT_LOCALE
+  awaitingLanguage: { type: Boolean, default: false },
   // Reference image received mid-order, held until checkout attaches it to the
   // Order. base64 rather than Buffer so it survives the plain-object round trip
   // through getSession/saveSession.

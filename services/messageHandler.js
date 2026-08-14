@@ -81,6 +81,10 @@ async function executeActions(actions, waId) {
         mockDeliveryUpdates(waId, sendTextMessage, action.prefix || "");
         break;
 
+      case ACTIONS.SET_LOCALE:
+        // Session-only on this path; it has no persistent client lookup.
+        break;
+
       default:
         console.warn("⚠️ Unknown action type:", action.type);
     }

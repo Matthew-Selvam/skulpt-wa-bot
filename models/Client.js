@@ -26,6 +26,7 @@ const ClientSchema = new mongoose.Schema({
   email: { type: String, default: "" },
   notes: { type: String, default: "" },
   active: { type: Boolean, default: true }, // false = paused from recurring reminders
+  locale: { type: String, default: null }, // preferred language; null = default
   source: { type: String, enum: ["admin", "order"], default: "admin" },
   lastOrderAt: { type: Date },
   events: { type: [EventSchema], default: [] },

@@ -10,8 +10,13 @@
 // caller to execute with whatever transport it has (Cloud API, whatsapp-web.js),
 // which keeps the branching logic pure and unit-testable.
 //
+// Customer-facing text lives in locales/ (see services/i18n.js); this file
+// holds only control flow. Command keywords stay English — they're what the
+// customer types, and the parser only recognises the English forms.
+//
 // The session object is mutated in place; persisting it is the caller's job
 // (see services/sessionStore.js).
+import { translator, parseLanguageCommand, parseLanguageChoice, normalizeLocale } from "./i18n.js";
 
 /** Action kinds returned to the transport adapter. */
 export const ACTIONS = {
@@ -19,6 +24,7 @@ export const ACTIONS = {
   DOCUMENT: "document",
   DELIVERY_TRACKING: "delivery-tracking",
   NOTIFY_ADMIN: "notify-admin",
+  SET_LOCALE: "set-locale",
 };
 
 // \b throughout: without it "hi" matches "history", "start" matches "started",
@@ -65,9 +71,12 @@ export async function runConversation({
   const { Trophy, Order, generateInvoice, useLetterhead, letterheadPath, adminNumber } = deps;
 
   const actions = [];
-  const say = (body) => actions.push({ type: ACTIONS.TEXT, body });
   // In groups every reply is @-prefixed so users can tell whose order is whose.
   const at = isGroup ? `@${mention} ` : "";
+  const say = (body) => actions.push({ type: ACTIONS.TEXT, body: at + body });
+
+  const locale = normalizeLocale(session.locale);
+  const _ = translator(locale);
 
   // --- Intent shortcuts: these answer immediately without advancing the flow ---
   //
@@ -77,17 +86,44 @@ export async function runConversation({
   // escape hatches from that step (handled below).
   const awaitingCustomization = session.step === "customization";
 
+  // --- Language selection ---
+  // Checked before everything else so a customer can always change language,
+  // and answered before the greeting branch can claim "hindi"/"english".
+  if (session.awaitingLanguage) {
+    const picked = parseLanguageChoice(text);
+    if (picked) {
+      session.locale = picked;
+      session.awaitingLanguage = false;
+      actions.push({ type: ACTIONS.SET_LOCALE, locale: picked });
+      say(translator(picked)("languageSet"));
+      return actions;
+    }
+    say(_("languagePrompt"));
+    return actions;
+  }
+
+  if (!awaitingCustomization) {
+    const langRequest = parseLanguageCommand(text);
+    if (langRequest === "prompt") {
+      session.awaitingLanguage = true;
+      say(_("languagePrompt"));
+      return actions;
+    }
+    if (langRequest) {
+      session.locale = langRequest;
+      actions.push({ type: ACTIONS.SET_LOCALE, locale: langRequest });
+      say(translator(langRequest)("languageSet"));
+      return actions;
+    }
+  }
+
   if (!awaitingCustomization && GREETING_RE.test(text)) {
-    say(
-      `👋 ${isGroup ? `Hello @${mention}!` : "Hello!"} Welcome to TrophyBot! 🏆\n\nI can help you:\n• Browse our trophy collection\n• Place custom orders\n• Track your deliveries\n\nType *browse* to see our trophies or *help* for more options!`
-    );
+    say(_("greeting"));
     return actions;
   }
 
   if (!awaitingCustomization && HELP_RE.test(text)) {
-    say(
-      `🆘 ${at}Here's how to use TrophyBot:\n\n📋 *Commands:*\n• *browse* - See available trophies\n• *history* - Your recent orders\n• *reorder 1* - Order a past one again\n• *status* - Check your current order\n• *cancel* - Cancel an unpaid order\n• *reset* - Start over\n• *help* - Show this menu\n\n🛒 *Order Process:*\n1. Browse trophies\n2. Select by number\n3. Add customization (text, or send a *photo*)\n4. Checkout & pay\n5. Track delivery`
-    );
+    say(_("help"));
     return actions;
   }
 
@@ -96,12 +132,18 @@ export async function runConversation({
       const order = await Order.findById(session.orderId);
       if (order) {
         say(
-          `📦 ${at}Your Order Status:\n\n🆔 Order ID: ${order._id}\n💰 Total: ₹${order.total}\n📊 Status: ${order.status}\n📅 Date: ${order.createdAt.toDateString()}\n\nItems: ${order.items.map((i) => i.name).join(", ")}`
+          _("orderStatus", {
+            id: order._id,
+            total: order.total,
+            status: order.status,
+            date: order.createdAt.toDateString(),
+            items: order.items.map((i) => i.name).join(", "),
+          })
         );
         return actions;
       }
     }
-    say(`❓ ${at}No active orders found. Type *browse* to start shopping!`);
+    say(_("noActiveOrders"));
     return actions;
   }
 
@@ -112,16 +154,16 @@ export async function runConversation({
       .limit(5);
 
     if (!past.length) {
-      say(`📭 ${at}No past orders yet. Reply *browse* to place your first one!`);
+      say(_("historyEmpty"));
       return actions;
     }
 
-    let response = `📚 ${at}*Your recent orders:*\n\n`;
+    let response = _("historyHeader");
     past.forEach((o, i) => {
       const items = o.items.map((it) => it.name).join(", ");
       response += `${i + 1}. ${STATUS_ICONS[o.status] || ""} *${o.status}* — ₹${o.total}\n   ${items}\n   ${o.createdAt.toDateString()}\n\n`;
     });
-    response += "🔁 Reply *reorder 1* (or another number) to order the same again.";
+    response += _("historyFooter");
     say(response);
     return actions;
   }
@@ -135,7 +177,7 @@ export async function runConversation({
     const chosen = past[parseInt(reorderMatch[1], 10) - 1];
 
     if (!chosen) {
-      say(`⚠️ ${at}No such order. Reply *history* to see your recent orders.`);
+      say(_("reorderNotFound"));
       return actions;
     }
 
@@ -146,7 +188,11 @@ export async function runConversation({
 
     const total = session.cart.reduce((sum, item) => sum + item.price, 0);
     say(
-      `🔁 ${at}*Reordering:*\n\n📦 ${session.cart.map((i) => `• ${i.name} - ₹${i.price}`).join("\n")}\n📝 *Customization:* "${session.customization}"\n💰 *Total: ₹${total}*\n\nReply *checkout* to confirm, or *reset* to start over.`
+      _("reordering", {
+        items: session.cart.map((i) => `• ${i.name} - ₹${i.price}`).join("\n"),
+        customization: session.customization,
+        total,
+      })
     );
     return actions;
   }
@@ -154,18 +200,16 @@ export async function runConversation({
   // --- Cancel an unpaid order ---
   if (!awaitingCustomization && text === "cancel") {
     if (!session.orderId) {
-      say(`❓ ${at}Nothing to cancel. Reply *browse* to start an order.`);
+      say(_("cancelNothing"));
       return actions;
     }
     const order = await Order.findById(session.orderId);
     if (!order) {
-      say(`❓ ${at}Nothing to cancel. Reply *browse* to start an order.`);
+      say(_("cancelNothing"));
       return actions;
     }
     if (order.status === "paid") {
-      say(
-        `⚠️ ${at}Order *${order._id}* is already paid and can't be cancelled here.\nPlease contact us directly for help.`
-      );
+      say(_("cancelAlreadyPaid", { id: order._id }));
       return actions;
     }
 
@@ -176,7 +220,7 @@ export async function runConversation({
     session.customization = "";
     session.orderId = null;
     session.pendingImage = null;
-    say(`🚫 ${at}Order cancelled. Reply *browse* to start a new one.`);
+    say(_("cancelled"));
     return actions;
   }
 
@@ -193,18 +237,15 @@ export async function runConversation({
   if (session.step === "welcome" && text.includes("browse")) {
     const trophies = await Trophy.find();
     if (trophies.length === 0) {
-      say(`⚠️ ${at}No trophies found in catalog.`);
+      say(_("catalogEmpty"));
       return actions;
     }
 
-    let response = isGroup
-      ? `🏆 *Available Trophies* @${mention}:\n\n`
-      : "🏆 *Available Trophies:*\n\n";
+    let response = _("catalogHeader");
     trophies.forEach((t, i) => {
       response += `${i + 1}. ${t.name} - *₹${t.price}*\n`;
     });
-    response +=
-      "\n💡 *How to order:*\n• Reply with the *number* to select a trophy\n• Add your customization text\n• Proceed to checkout\n\n🛒 Ready to start? Just reply with a number!";
+    response += _("catalogFooter");
 
     session.step = "browse";
     say(response);
@@ -218,16 +259,14 @@ export async function runConversation({
     const trophy = trophies[index];
 
     if (!trophy) {
-      say(`⚠️ ${at}Invalid choice. Try again.`);
+      say(_("invalidChoice"));
       return actions;
     }
 
     // Store a plain object — the cart round-trips through MongoDB on save.
     session.cart.push(typeof trophy.toObject === "function" ? trophy.toObject() : trophy);
     session.step = "customization";
-    say(
-      `✅ ${at}*${trophy.name}* added to cart! 🛒\n\n🖊 *Customization:*\nPlease enter the text you want engraved on this trophy.\n\n💡 *Examples:*\n• "Best Employee 2024"\n• "Championship Winner"\n• "Outstanding Performance"\n\nJust reply with your customization text!`
-    );
+    say(_("trophyAdded", { name: trophy.name }));
     return actions;
   }
 
@@ -240,19 +279,18 @@ export async function runConversation({
       session.cart = [];
       session.customization = "";
       session.pendingImage = null;
-      say(`🔄 ${at}Cancelled. Reply *browse* to start again.`);
+      say(_("customizationCancelled"));
       return actions;
     }
 
     session.customization = rawText;
     session.step = "checkout";
 
-    const photoNote = session.pendingImage
-      ? "\n🖼 *Reference image received*"
-      : "\n💡 You can also send a *photo* as a design reference.";
-
     say(
-      `✅ ${at}*Customization added!* ✨\n\n📝 *Your customization:* "${rawText}"${photoNote}\n\n🛒 *Ready to checkout?*\nReply *checkout* to proceed with your order!`
+      _("customizationAdded", {
+        text: rawText,
+        photoNote: session.pendingImage ? _("photoReceived") : _("photoHint"),
+      })
     );
     return actions;
   }
@@ -284,12 +322,14 @@ export async function runConversation({
     session.step = "payment";
     session.pendingImage = null; // now persisted on the order
 
-    const photoLine = order.referenceImage?.data ? "\n🖼 *Reference image attached*" : "";
-
     say(
-      `🛒 ${at}*Order Summary:*\n\n📦 *Items:*\n${session.cart
-        .map((item) => `• ${item.name} - ₹${item.price}`)
-        .join("\n")}\n\n📝 *Customization:* "${session.customization}"${photoLine}\n\n💰 *Total Amount: ₹${total}*\n🚚 *Estimated delivery:* ${deliveryEstimate()}\n\n💳 *Ready to pay?*\nReply *pay* to confirm your order!\n\n_Reply *cancel* to cancel this order._`
+      _("orderSummary", {
+        items: session.cart.map((item) => `• ${item.name} - ₹${item.price}`).join("\n"),
+        customization: session.customization,
+        total,
+        eta: deliveryEstimate(),
+        photoLine: order.referenceImage?.data ? _("photoAttached") : "",
+      })
     );
     return actions;
   }
@@ -300,7 +340,7 @@ export async function runConversation({
     order.status = "paid";
     await order.save();
 
-    const caption = `🎉 ${at}*Order Confirmed!* ✅\n\n📄 *Invoice attached*\n🚚 *Delivery tracking will start soon*\n\nThank you for choosing TrophyBot! 🏆`;
+    const caption = at + _("orderConfirmed");
 
     try {
       const invoicePath = await generateInvoice(order, useLetterhead, letterheadPath);
@@ -312,10 +352,11 @@ export async function runConversation({
       });
     } catch (err) {
       console.error("❌ Invoice generation failed:", err);
-      say(`⚠️ ${at}Could not generate invoice.`);
+      say(_("invoiceFailed"));
     }
 
     if (adminNumber) {
+      // Admin messages stay in English — the operator is a fixed, known person
       actions.push({
         type: ACTIONS.NOTIFY_ADMIN,
         body: `📢 New Order Paid!\nID: ${order._id}\nTotal: ₹${order.total}${
@@ -326,7 +367,11 @@ export async function runConversation({
 
     // Tracking starts regardless of invoice outcome — the order is paid, so the
     // customer should get status updates either way.
-    actions.push({ type: ACTIONS.DELIVERY_TRACKING, prefix: at });
+    actions.push({
+      type: ACTIONS.DELIVERY_TRACKING,
+      prefix: at,
+      orderId: String(order._id),
+    });
 
     session.step = "done";
     return actions;
@@ -337,22 +382,19 @@ export async function runConversation({
     session.step = "welcome";
     session.cart = [];
     session.customization = "";
-    say(`🔄 ${at}Session reset! Reply *browse* to see our trophies.`);
+    say(_("reset"));
     return actions;
   }
 
   // Step-aware fallback
   // No "customization" entry: that step consumes any text as the engraving,
   // so it can never reach this fallback.
-  const fallbacks = {
-    welcome: `❓ ${at}I didn't understand that. Try:\n• *browse* - See trophies\n• *help* - Show commands\n• *hi* - Get started`,
-    browse: `❓ ${at}Please reply with a *number* to select a trophy, or *help* for options.`,
-    checkout: `❓ ${at}Reply *checkout* to proceed with your order.`,
-    payment: `❓ ${at}Reply *pay* to confirm your order.`,
+  const fallbackKeys = {
+    welcome: "fallbackWelcome",
+    browse: "fallbackBrowse",
+    checkout: "fallbackCheckout",
+    payment: "fallbackPayment",
   };
-  say(
-    fallbacks[session.step] ||
-      `❓ ${at}Please reply *browse* to see products, *reset* to start over, or *help* for options.`
-  );
+  say(_(fallbackKeys[session.step] || "fallbackGeneric"));
   return actions;
 }

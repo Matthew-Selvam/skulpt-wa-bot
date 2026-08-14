@@ -4,6 +4,73 @@ All notable changes to TrophyBot are documented here.
 
 This project follows a phased roadmap; each phase ships as a tagged version.
 
+## [2.0.0] - 2026-08-13
+
+Phase 7, the final phase: real delivery integration and multi-language support.
+
+Major version because delivery stops being simulated once Porter is configured
+— a real behaviour change, and one that costs money per dispatch.
+
+### Added
+
+- **Porter delivery integration**, replacing the mocked status updates: creates
+  a real dispatch on payment, polls for status changes, and messages the
+  customer only when the status actually changes (so a slow delivery doesn't
+  spam the chat). Tracking URL and delivery id are stored on the Order.
+
+  ⚠️ **The endpoint shape is unverified.** This was written without access to
+  Porter's API documentation, credentials, or sandbox — the paths, auth header,
+  and response field names are best-effort defaults. Every one is overridable
+  by env var (`PORTER_CREATE_PATH`, `PORTER_STATUS_PATH`, `PORTER_AUTH_HEADER`,
+  …) so they can be corrected without code changes. Confirm them against
+  Porter's reference before enabling.
+
+  **The integration is inert until `PORTER_API_KEY` is set.** Provider
+  selection is deliberately fail-safe: without a key the mock is used even if
+  `DELIVERY_PROVIDER=porter`, so a half-configured deployment degrades to the
+  previous behaviour rather than silently failing to dispatch.
+
+- **Hindi and English support.** Every customer-facing string moved out of the
+  flow into `locales/`, with `services/i18n.js` resolving them. Customers
+  switch with `language` (or `language hindi`), and the choice is stored on
+  their Client record — so it survives session expiry and applies to outreach
+  reminders sent outside a conversation.
+
+  Lookup falls back to English **per key, not per locale**, so a partially
+  translated locale still works: translated keys render in that language and
+  anything missing renders in English.
+
+  Command keywords (`browse`, `checkout`, `pay`) stay English in both locales —
+  they're what the customer must actually type, and the parser only recognises
+  the English forms.
+
+### Fixed
+
+- **Language choices made before a customer's first order were silently lost.**
+  The Client record is only created at checkout, so writing the locale to it
+  during language selection updated nothing. Checkout now carries the session's
+  locale across when creating or updating the record.
+- The Hindi help text described checkout as "चेकआउट और भुगतान" while the parser
+  only accepts the literal `checkout`/`pay` — a Hindi-reading customer was
+  being told to type something that wouldn't work.
+
+### Verified
+
+135 unit tests (46 new: locale resolution, per-key fallback, Hindi covering
+every English key with matching value types, language-command parsing
+including that the greeting "hi" is not mistaken for the Hindi locale code,
+status normalization, and provider selection) plus a 17-check end-to-end run:
+a complete order placed **in Hindi** through the real handler, plus confirmation
+that the locale reaches the Client record and a fresh session picks it up.
+
+Delivery is covered against a stub HTTP server — dispatch payload, auth header,
+idempotent request id, and status normalization. **It has not been exercised
+against Porter's real API**, which needs credentials.
+
+The one behaviour pinned hardest: an unrecognised Porter status normalizes to
+`unknown`, never `delivered`. The dangerous failure mode here is telling a
+customer their order arrived when it hasn't.
+
 ## [1.6.0] - 2026-08-13
 
 Phase 6 of the phased roadmap: admin dashboard and operations.

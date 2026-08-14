@@ -11,6 +11,8 @@ function defaults() {
     customization: "",
     orderId: null,
     pendingImage: null,
+    locale: null,
+    awaitingLanguage: false,
     isGroup: false,
     groupId: null,
     userId: null,

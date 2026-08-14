@@ -15,9 +15,10 @@ import {
   handleAdminCommand,
   handleClientReply,
 } from "./services/outreachService.js";
-import { mockDeliveryUpdates } from "./utils/deliveryTracker.js";
+import { startDelivery, activeProvider } from "./services/delivery/index.js";
 import { getSession, saveSession } from "./services/sessionStore.js";
 import { runConversation, ACTIONS } from "./services/conversationFlow.js";
+import { translator } from "./services/i18n.js";
 import { generateInvoice } from "./utils/invoiceGenerator.js";
 
 dotenv.config();
@@ -38,6 +39,20 @@ const USE_LETTERHEAD = process.env.USE_LETTERHEAD === "true" || false;
 const LETTERHEAD_PATH = process.env.LETTERHEAD_PATH || "./letterhead_template.png";
 // Keep reference images well under MongoDB's 16MB document cap
 const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES || 5 * 1024 * 1024);
+
+// Warehouse/pickup address handed to the delivery provider. Only used when
+// Porter is configured; the mock provider ignores it.
+const PORTER_PICKUP = {
+  address: {
+    street_address1: process.env.PICKUP_ADDRESS || "",
+    city: process.env.PICKUP_CITY || "",
+    pincode: process.env.PICKUP_PINCODE || "",
+    contact_details: {
+      name: process.env.PICKUP_CONTACT_NAME || process.env.COMPANY_NAME || "TrophyBot",
+      phone_number: process.env.PICKUP_CONTACT_PHONE || process.env.ADMIN_NUMBER || "",
+    },
+  },
+};
 
 // -------------------- MESSAGE SENDER --------------------
 async function sendMessage(to, message, mediaUrl = null) {
@@ -92,8 +107,38 @@ async function executeActions(actions, { from, mention }) {
         break;
       }
 
-      case ACTIONS.DELIVERY_TRACKING:
-        mockDeliveryUpdates(from, (to, text) => sendMessage(to, text), action.prefix || "");
+      case ACTIONS.DELIVERY_TRACKING: {
+        // Fire-and-forget: a slow dispatch call must not delay the customer's
+        // order confirmation. startDelivery falls back to the mock provider
+        // unless Porter is configured.
+        const order = action.orderId ? await Order.findById(action.orderId) : null;
+        startDelivery(order || { _id: action.orderId }, (to, text) => sendMessage(to, text), {
+          to: from,
+          prefix: action.prefix || "",
+          pickup: PORTER_PICKUP,
+          drop: { address: { contact_details: { phone_number: from } } },
+          onDeliveryCreated: async ({ deliveryId, trackingUrl }) => {
+            if (!order) return;
+            order.deliveryId = deliveryId;
+            order.trackingUrl = trackingUrl;
+            await order.save();
+          },
+        }).catch((err) => console.error("❌ Delivery dispatch failed:", err.message));
+        break;
+      }
+
+      case ACTIONS.SET_LOCALE:
+        // Mirror the language choice onto the Client record so reminders sent
+        // outside a conversation use it too. No upsert: a Client may not exist
+        // yet (it's created at checkout), and inserting one here would fail
+        // validation on the required `name`. Checkout carries session.locale
+        // across for that case.
+        try {
+          const phone = from.replace(/\D/g, "");
+          if (phone) await Client.updateOne({ phone }, { $set: { locale: action.locale } });
+        } catch (err) {
+          console.error("⚠️ Failed to persist locale on client:", err.message);
+        }
         break;
 
       default:
@@ -169,18 +214,27 @@ export async function botHandler(message, businessAccountId) {
       cleanText = cleanText.replace(/@\d+\s*/g, "").trim();
     }
 
+    // A returning customer's language preference lives on their Client record,
+    // so a new session picks up where the last one left off.
+    let knownLocale = null;
+    if (!isGroup) {
+      try {
+        const phone = from.replace(/\D/g, "");
+        if (phone) knownLocale = (await Client.findOne({ phone }))?.locale || null;
+      } catch { /* not fatal — fall back to the default locale */ }
+    }
+
     // Load (or create) the persistent session for this chat
     const { session, created } = await getSession(sessionKey, {
       isGroup: isGroup,
       groupId: isGroup ? from : null,
       userId: userId,
+      locale: knownLocale,
     });
 
     if (created) {
-      const welcomeMsg = isGroup
-        ? `👋 Welcome to TrophyBot! @${mention}\nReply *browse* to see our trophies.`
-        : "👋 Welcome to TrophyBot!\nReply *browse* to see our trophies.";
-
+      const _ = translator(session.locale);
+      const welcomeMsg = isGroup ? `@${mention} ${_("welcome")}` : _("welcome");
       await sendMessage(from, welcomeMsg);
       return;
     }
@@ -276,6 +330,10 @@ export async function botHandler(message, businessAccountId) {
           const existing = await Client.findOne({ phone: cleanPhone });
           if (existing) {
             existing.lastOrderAt = new Date();
+            // Carry the language choice over — a customer can pick a language
+            // before any Client record exists, in which case SET_LOCALE had
+            // nothing to write to.
+            if (session.locale) existing.locale = session.locale;
             await existing.save();
           } else {
             await Client.create({
@@ -283,6 +341,7 @@ export async function botHandler(message, businessAccountId) {
               phone: cleanPhone,
               source: "order",
               lastOrderAt: new Date(),
+              locale: session.locale || null,
             });
           }
         }
