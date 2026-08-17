@@ -1,7 +1,14 @@
 // test-specific-endpoints.js - Test specific endpoints
+import 'dotenv/config';
 import fetch from 'node-fetch';
 
-const BASE_URL = 'https://skulpt.onrender.com';
+const BASE_URL = process.env.WEBHOOK_URL || 'https://skulpt.onrender.com';
+const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
+
+if (!VERIFY_TOKEN) {
+  console.error("❌ Set WEBHOOK_VERIFY_TOKEN in your .env first.");
+  process.exit(1);
+}
 
 console.log('🧪 Testing specific endpoints...\n');
 
@@ -35,7 +42,7 @@ async function testEndpoint(path, description) {
 async function runTests() {
   await testEndpoint('/', 'Root endpoint');
   await testEndpoint('/health', 'Health endpoint');
-  await testEndpoint('/webhook?hub.mode=subscribe&hub.verify_token=REDACTED_WEBHOOK_VERIFY_TOKEN&hub.challenge=test123', 'Webhook verification');
+  await testEndpoint(`/webhook?hub.mode=subscribe&hub.verify_token=${VERIFY_TOKEN}&hub.challenge=test123`, 'Webhook verification');
 }
 
 runTests();

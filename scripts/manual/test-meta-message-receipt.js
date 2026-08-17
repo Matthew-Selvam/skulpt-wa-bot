@@ -1,8 +1,14 @@
 // test-meta-message-receipt.js - Test if Meta is receiving messages
+import 'dotenv/config';
 import fetch from 'node-fetch';
 
-const PHONE_NUMBER_ID = "776787372195136";
-const ACCESS_TOKEN = "REDACTED_WHATSAPP_ACCESS_TOKEN";
+const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+
+if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
+  console.error("❌ Set WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN in your .env first.");
+  process.exit(1);
+}
 
 async function testMessageReceipt() {
   console.log("🔍 Testing if Meta is receiving messages...");

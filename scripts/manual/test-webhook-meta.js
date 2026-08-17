@@ -1,8 +1,14 @@
 // test-webhook-meta.js - Test webhook with Meta's test endpoint
+import 'dotenv/config';
 import fetch from 'node-fetch';
 
-const WEBHOOK_URL = 'https://skulpt.onrender.com/webhook';
-const VERIFY_TOKEN = 'REDACTED_WEBHOOK_VERIFY_TOKEN';
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://skulpt.onrender.com/webhook';
+const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
+
+if (!VERIFY_TOKEN) {
+  console.error("❌ Set WEBHOOK_VERIFY_TOKEN in your .env first.");
+  process.exit(1);
+}
 
 console.log('🧪 Testing Meta Webhook Integration...\n');
 

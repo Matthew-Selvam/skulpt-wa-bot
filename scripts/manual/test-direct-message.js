@@ -1,9 +1,15 @@
 // test-direct-message.js - Test sending a message directly to the bot
+import 'dotenv/config';
 import fetch from 'node-fetch';
 
-const PHONE_NUMBER_ID = "776787372195136";
-const ACCESS_TOKEN = "REDACTED_WHATSAPP_ACCESS_TOKEN";
-const BOT_NUMBER = "918838975981";
+const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+const BOT_NUMBER = process.env.BOT_NUMBER;
+
+if (!PHONE_NUMBER_ID || !ACCESS_TOKEN || !BOT_NUMBER) {
+  console.error("❌ Set WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN, and BOT_NUMBER in your .env first.");
+  process.exit(1);
+}
 
 async function sendTestMessage() {
   console.log("🧪 Sending test message directly to bot...");
